@@ -108,9 +108,9 @@ sealed class SetupForm : Form
             var on = Enabled && !DesignMode;
             var isHover = on && ClientRectangle.Contains(PointToClient(Cursor.Position));
             Color bg, fg;
-            if (!on) { bg = Color.FromArgb(13, 13, 13); fg = Color.FromArgb(0, 100, 0); }
-            else if (Primary) { bg = isHover ? Color.FromArgb(60, 255, 60) : Color.Lime; fg = Color.Black; }
-            else { bg = isHover ? Color.FromArgb(34, 34, 34) : Color.FromArgb(22, 22, 22); fg = isHover ? Color.FromArgb(190, 255, 190) : Color.Lime; }
+            if (!on) { bg = Color.FromArgb(17, 17, 17); fg = Color.FromArgb(85, 85, 85); }
+            else if (Primary) { bg = isHover ? Color.FromArgb(80, 230, 50) : Color.FromArgb(68, 221, 34); fg = Color.Black; }
+            else { bg = isHover ? Color.FromArgb(42, 42, 42) : Color.FromArgb(17, 17, 17); fg = isHover ? Color.White : Color.FromArgb(204, 204, 204); }
             using var path = Pill(ClientRectangle, Height / 2);
             using var b = new SolidBrush(bg);
             g.FillPath(b, path);
@@ -134,8 +134,8 @@ sealed class SetupForm : Form
     public SetupForm()
     {
         Text = "rzswitch // setup";
-        BackColor = Color.FromArgb(5, 5, 5);
-        ForeColor = Color.FromArgb(201, 212, 201);
+        BackColor = Color.FromArgb(34, 34, 34);
+        ForeColor = Color.FromArgb(204, 204, 204);
         Size = new Size(520, 462);
         StartPosition = FormStartPosition.CenterScreen;
         FormBorderStyle = FormBorderStyle.None;
@@ -155,13 +155,13 @@ sealed class SetupForm : Form
         {
             Location = new Point(0, 0),
             Size = new Size(520, 70),
-            BackColor = Color.FromArgb(8, 8, 8),
+            BackColor = Color.FromArgb(34, 34, 34),
         };
         Controls.Add(header);
         var title = new Label
         {
             Text = "RZSWITCH // SETUP",
-            ForeColor = Color.Lime,
+            ForeColor = Color.White,
             Font = new Font("Segoe UI", 17, FontStyle.Bold),
             Location = new Point(16, 8),
             AutoSize = true,
@@ -170,7 +170,7 @@ sealed class SetupForm : Form
         var sub = new Label
         {
             Text = "game profile auto-switch | installer",
-            ForeColor = Color.FromArgb(90, 107, 90),
+            ForeColor = Color.FromArgb(150, 150, 150),
             Font = new Font("Segoe UI", 9),
             Location = new Point(18, 40),
             AutoSize = true,
@@ -200,7 +200,7 @@ sealed class SetupForm : Form
         var gmsLabel = new Label
         {
             Text = "G A M E   M A N A G E R",
-            ForeColor = Color.FromArgb(110, 130, 110),
+            ForeColor = Color.FromArgb(150, 150, 150),
             Font = new Font("Segoe UI", 9, FontStyle.Bold),
             Location = new Point(20, 74),
             AutoSize = true,
@@ -210,14 +210,14 @@ sealed class SetupForm : Form
         var svcLabel = new Label
         {
             Text = "R Z S W I T C H   S E R V I C E",
-            ForeColor = Color.FromArgb(110, 130, 110),
+            ForeColor = Color.FromArgb(150, 150, 150),
             Font = new Font("Segoe UI", 9, FontStyle.Bold),
             Location = new Point(20, 148),
             AutoSize = true,
         };
         Controls.Add(svcLabel);
 
-        _hint.ForeColor = Color.FromArgb(95, 120, 95);
+        _hint.ForeColor = Color.FromArgb(140, 140, 140);
         _hint.Font = new Font("Segoe UI", 9, FontStyle.Italic);
         _hint.Location = new Point(20, 222);
         _hint.AutoSize = true;
@@ -282,8 +282,8 @@ sealed class SetupForm : Form
         _log.ReadOnly = true;
         _log.ScrollBars = ScrollBars.Vertical;
         _log.BorderStyle = BorderStyle.None;
-        _log.BackColor = Color.FromArgb(8, 8, 8);
-        _log.ForeColor = Color.Lime;
+        _log.BackColor = Color.FromArgb(17, 17, 17);
+        _log.ForeColor = Color.FromArgb(204, 204, 204);
         _log.Font = new Font("Consolas", 9);
         _log.Location = new Point(18, y);
         _log.Size = new Size(484, 190);
