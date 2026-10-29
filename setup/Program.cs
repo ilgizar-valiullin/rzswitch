@@ -80,6 +80,7 @@ sealed class SetupForm : Form
 {
     private sealed class RzButton : Button
     {
+        public bool Primary;
         public RzButton(string text)
         {
             Text = text;
@@ -89,23 +90,33 @@ sealed class SetupForm : Form
             Size = new Size(224, 44);
             SetStyle(ControlStyles.UserPaint | ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer, true);
         }
+        private static System.Drawing.Drawing2D.GraphicsPath Pill(Rectangle r, int rad)
+        {
+            var p = new System.Drawing.Drawing2D.GraphicsPath();
+            int d = rad * 2;
+            p.AddArc(r.X, r.Y, d, d, 180, 90);
+            p.AddArc(r.Right - d, r.Y, d, d, 270, 90);
+            p.AddArc(r.Right - d, r.Bottom - d, d, d, 0, 90);
+            p.AddArc(r.X, r.Bottom - d, d, d, 90, 90);
+            p.CloseFigure();
+            return p;
+        }
         protected override void OnPaint(PaintEventArgs e)
         {
             var g = e.Graphics;
+            g.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
             var on = Enabled && !DesignMode;
             var isHover = on && ClientRectangle.Contains(PointToClient(Cursor.Position));
-            var bg = on ? (isHover ? Color.FromArgb(22, 22, 22) : Color.FromArgb(14, 14, 14)) : Color.FromArgb(7, 7, 7);
-            var fg = on ? (isHover ? Color.FromArgb(180, 255, 180) : Color.Lime) : Color.FromArgb(0, 110, 0);
+            Color bg, fg;
+            if (!on) { bg = Color.FromArgb(13, 13, 13); fg = Color.FromArgb(0, 100, 0); }
+            else if (Primary) { bg = isHover ? Color.FromArgb(60, 255, 60) : Color.Lime; fg = Color.Black; }
+            else { bg = isHover ? Color.FromArgb(34, 34, 34) : Color.FromArgb(22, 22, 22); fg = isHover ? Color.FromArgb(190, 255, 190) : Color.Lime; }
+            using var path = Pill(ClientRectangle, Height / 2);
             using var b = new SolidBrush(bg);
-            g.FillRectangle(b, ClientRectangle);
+            g.FillPath(b, path);
             using var brush = new SolidBrush(fg);
             var fmt = new StringFormat { Alignment = StringAlignment.Center, LineAlignment = StringAlignment.Center };
             g.DrawString(Text, Font, brush, ClientRectangle, fmt);
-            if (on && isHover)
-            {
-                using var glow = new Pen(Color.FromArgb(60, 0, 255, 0), 3);
-                g.DrawRectangle(glow, 2, 2, Width - 5, Height - 5);
-            }
         }
         protected override void OnMouseEnter(EventArgs e) { base.OnMouseEnter(e); Invalidate(); }
         protected override void OnMouseLeave(EventArgs e) { base.OnMouseLeave(e); Invalidate(); }
@@ -126,9 +137,20 @@ sealed class SetupForm : Form
         Text = "rzswitch // setup";
         BackColor = Color.FromArgb(5, 5, 5);
         ForeColor = Color.FromArgb(201, 212, 201);
-        Size = new Size(520, 600);
+        Size = new Size(520, 512);
         StartPosition = FormStartPosition.CenterScreen;
         FormBorderStyle = FormBorderStyle.None;
+        using (var rp = new System.Drawing.Drawing2D.GraphicsPath())
+        {
+            int rad = 16, d = rad * 2;
+            var r = new Rectangle(0, 0, Width, Height);
+            rp.AddArc(r.X, r.Y, d, d, 180, 90);
+            rp.AddArc(r.Right - d, r.Y, d, d, 270, 90);
+            rp.AddArc(r.Right - d, r.Bottom - d, d, d, 0, 90);
+            rp.AddArc(r.X, r.Bottom - d, d, d, 90, 90);
+            rp.CloseFigure();
+            Region = new Region(rp);
+        }
 
         var header = new Panel
         {
@@ -174,20 +196,43 @@ sealed class SetupForm : Form
             if (e.Button == MouseButtons.Left) { Left += e.X - _drag.X; Top += e.Y - _drag.Y; }
         };
 
+        _bOwnSetup.Primary = true;
+
+        var gmsLabel = new Label
+        {
+            Text = "G A M E   M A N A G E R",
+            ForeColor = Color.FromArgb(110, 130, 110),
+            Font = new Font("Segoe UI", 9, FontStyle.Bold),
+            Location = new Point(20, 74),
+            AutoSize = true,
+        };
+        Controls.Add(gmsLabel);
+
+        var svcLabel = new Label
+        {
+            Text = "R Z S W I T C H   S E R V I C E",
+            ForeColor = Color.FromArgb(110, 130, 110),
+            Font = new Font("Segoe UI", 9, FontStyle.Bold),
+            Location = new Point(20, 148),
+            AutoSize = true,
+        };
+        Controls.Add(svcLabel);
+
         _hint.ForeColor = Color.FromArgb(95, 120, 95);
         _hint.Font = new Font("Segoe UI", 9, FontStyle.Italic);
-        _hint.Location = new Point(18, 78);
+        _hint.Location = new Point(20, 272);
         _hint.AutoSize = true;
+        _hint.MaximumSize = new Size(484, 0);
         Controls.Add(_hint);
 
         var buttons = new[] { _bGmsDisable, _bGmsEnable, _bOwnSetup, _bOwnRemove, _bOwnStop };
-        int y = 104;
+        int[] rows = { 96, 170, 222 };
         for (int i = 0; i < buttons.Length; i++)
         {
-            buttons[i].Location = new Point(18 + (i % 2) * 236, y + (i / 2) * 52);
+            buttons[i].Location = new Point(18 + (i % 2) * 236, rows[i / 2]);
             Controls.Add(buttons[i]);
         }
-        y += 3 * 52 + 14;
+        int y = 288;
 
         _bGmsDisable.Click += (_, _) => Do("GameManager disabled", () =>
         {
