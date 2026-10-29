@@ -88,6 +88,7 @@ sealed class SetupForm : Form
             FlatAppearance.BorderSize = 0;
             Font = new Font("Segoe UI", 10, FontStyle.Bold);
             Size = new Size(224, 44);
+            BackColor = Color.FromArgb(34, 34, 34);
             SetStyle(ControlStyles.UserPaint | ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer, true);
         }
         private static System.Drawing.Drawing2D.GraphicsPath Pill(Rectangle r, int rad)
@@ -105,6 +106,7 @@ sealed class SetupForm : Form
         {
             var g = e.Graphics;
             g.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
+            using (var bg0 = new SolidBrush(BackColor)) g.FillRectangle(bg0, ClientRectangle);
             var on = Enabled && !DesignMode;
             var isHover = on && ClientRectangle.Contains(PointToClient(Cursor.Position));
             Color bg, fg;
