@@ -1,4 +1,4 @@
-// rzswitch-setup: installer panel (WinForms, Razer-styled).
+// rzswitch-setup: installer panel (WinForms, Razer-styled, borderless).
 // Requires admin (manifest). Installs/removes the rzswitch service and
 // toggles Razer GameManagerService3. Own-service start is locked while
 // GameManager is active (port/registry conflict).
@@ -22,14 +22,14 @@ static class Svc
         try
         {
             if (!ServiceController.GetServices().Any(s => string.Equals(s.ServiceName, name, StringComparison.OrdinalIgnoreCase)))
-                return new Info(false, "—", "—");
+                return new Info(false, "-", "-");
             using var sc = new ServiceController(name);
             string status;
             try { status = sc.Status.ToString(); }
             catch { status = "unknown"; }
             return new Info(true, status, StartMode(name));
         }
-        catch { return new Info(false, "—", "—"); }
+        catch { return new Info(false, "-", "-"); }
     }
 
     private static string StartMode(string name)
@@ -80,148 +80,176 @@ sealed class SetupForm : Form
 {
     private sealed class RzButton : Button
     {
-        public RzButton()
+        public RzButton(string text)
         {
+            Text = text;
             FlatStyle = FlatStyle.Flat;
             FlatAppearance.BorderSize = 0;
             Font = new Font("Segoe UI", 10, FontStyle.Bold);
-            Size = new Size(224, 40);
+            Size = new Size(224, 44);
             SetStyle(ControlStyles.UserPaint | ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer, true);
         }
         protected override void OnPaint(PaintEventArgs e)
         {
             var g = e.Graphics;
-            var on = Enabled;
-            var fg = on ? Color.Lime : Color.FromArgb(0, 110, 0);
-            var border = on ? Color.Lime : Color.FromArgb(0, 80, 0);
-            g.Clear(Color.Black);
-            using var pen = new Pen(border, 2);
-            g.DrawRectangle(pen, 1, 1, Width - 3, Height - 3);
+            var on = Enabled && !DesignMode;
+            var isHover = on && ClientRectangle.Contains(PointToClient(Cursor.Position));
+            var bg = on ? (isHover ? Color.FromArgb(22, 22, 22) : Color.FromArgb(14, 14, 14)) : Color.FromArgb(7, 7, 7);
+            var fg = on ? (isHover ? Color.FromArgb(180, 255, 180) : Color.Lime) : Color.FromArgb(0, 110, 0);
+            using var b = new SolidBrush(bg);
+            g.FillRectangle(b, ClientRectangle);
             using var brush = new SolidBrush(fg);
             var fmt = new StringFormat { Alignment = StringAlignment.Center, LineAlignment = StringAlignment.Center };
             g.DrawString(Text, Font, brush, ClientRectangle, fmt);
-            if (on && (Focused || ContainsFocus))
+            if (on && isHover)
             {
-                using var glow = new Pen(Color.FromArgb(90, 0, 255, 0), 4);
-                g.DrawRectangle(glow, 3, 3, Width - 7, Height - 7);
+                using var glow = new Pen(Color.FromArgb(60, 0, 255, 0), 3);
+                g.DrawRectangle(glow, 2, 2, Width - 5, Height - 5);
             }
         }
+        protected override void OnMouseEnter(EventArgs e) { base.OnMouseEnter(e); Invalidate(); }
+        protected override void OnMouseLeave(EventArgs e) { base.OnMouseLeave(e); Invalidate(); }
     }
 
-    private readonly Label _gmsState = new();
-    private readonly Label _ownState = new();
-    private readonly RzButton _bGmsDisable = new();
-    private readonly RzButton _bGmsEnable = new();
-    private readonly RzButton _bOwnInstall = new();
-    private readonly RzButton _bOwnRemove = new();
-    private readonly RzButton _bOwnStart = new();
-    private readonly RzButton _bOwnStop = new();
+    private readonly RzButton _bGmsDisable = new("Disable GameManager");
+    private readonly RzButton _bGmsEnable = new("Enable GameManager");
+    private readonly RzButton _bOwnSetup = new("Install & Start our service");
+    private readonly RzButton _bOwnRemove = new("Remove our service");
+    private readonly RzButton _bOwnStop = new("Stop our service");
+    private readonly Label _hint = new();
     private readonly TextBox _log = new();
     private readonly System.Windows.Forms.Timer _timer = new();
+    private Point _drag;
 
     public SetupForm()
     {
         Text = "rzswitch // setup";
-        BackColor = Color.Black;
+        BackColor = Color.FromArgb(5, 5, 5);
         ForeColor = Color.FromArgb(201, 212, 201);
-        Size = new Size(520, 640);
+        Size = new Size(520, 600);
         StartPosition = FormStartPosition.CenterScreen;
-        FormBorderStyle = FormBorderStyle.FixedDialog;
-        MaximizeBox = false;
+        FormBorderStyle = FormBorderStyle.None;
 
+        var header = new Panel
+        {
+            Location = new Point(0, 0),
+            Size = new Size(520, 70),
+            BackColor = Color.FromArgb(8, 8, 8),
+        };
+        Controls.Add(header);
         var title = new Label
         {
             Text = "RZSWITCH // SETUP",
             ForeColor = Color.Lime,
-            Font = new Font("Segoe UI", 16, FontStyle.Bold),
-            Location = new Point(16, 12),
+            Font = new Font("Segoe UI", 17, FontStyle.Bold),
+            Location = new Point(16, 8),
             AutoSize = true,
         };
-        Controls.Add(title);
+        header.Controls.Add(title);
         var sub = new Label
         {
-            Text = "installer panel — запуск от администратора",
-            ForeColor = Color.DimGray,
-            Location = new Point(18, 44),
+            Text = "game profile auto-switch  •  installer",
+            ForeColor = Color.FromArgb(90, 107, 90),
+            Font = new Font("Segoe UI", 9),
+            Location = new Point(18, 40),
             AutoSize = true,
         };
-        Controls.Add(sub);
-
-        int y = 76;
-        _gmsState.Location = new Point(18, y); _gmsState.AutoSize = true; _gmsState.Font = new Font("Consolas", 10);
-        Controls.Add(_gmsState); y += 26;
-        _ownState.Location = new Point(18, y); _ownState.AutoSize = true; _ownState.Font = new Font("Consolas", 10);
-        Controls.Add(_ownState); y += 34;
-
-        _bGmsDisable.Text = "Выключить GameManager";
-        _bGmsEnable.Text = "Включить GameManager";
-        _bOwnInstall.Text = "Установить наш сервис";
-        _bOwnRemove.Text = "Удалить наш сервис";
-        _bOwnStart.Text = "Включить наш сервис";
-        _bOwnStop.Text = "Выключить наш сервис";
-        var buttons = new[] { _bGmsDisable, _bGmsEnable, _bOwnInstall, _bOwnRemove, _bOwnStart, _bOwnStop };
-        foreach (var b in buttons)
+        header.Controls.Add(sub);
+        var close = new Label
         {
-            b.Size = new Size(224, 40);
-            b.Location = new Point(18 + (Array.IndexOf(buttons, b) % 2) * 236, y + (Array.IndexOf(buttons, b) / 2) * 48);
-            Controls.Add(b);
+            Text = "✕",
+            ForeColor = Color.FromArgb(120, 120, 120),
+            Font = new Font("Segoe UI", 13, FontStyle.Bold),
+            Location = new Point(482, 10),
+            AutoSize = true,
+            Cursor = Cursors.Hand,
+        };
+        close.MouseEnter += (_, _) => close.ForeColor = Color.Red;
+        close.MouseLeave += (_, _) => close.ForeColor = Color.FromArgb(120, 120, 120);
+        close.Click += (_, _) => Close();
+        header.Controls.Add(close);
+        header.MouseDown += (_, e) => { if (e.Button == MouseButtons.Left) { _drag = e.Location; } };
+        header.MouseMove += (_, e) =>
+        {
+            if (e.Button == MouseButtons.Left) { Left += e.X - _drag.X; Top += e.Y - _drag.Y; }
+        };
+
+        _hint.ForeColor = Color.FromArgb(95, 120, 95);
+        _hint.Font = new Font("Segoe UI", 9, FontStyle.Italic);
+        _hint.Location = new Point(18, 78);
+        _hint.AutoSize = true;
+        Controls.Add(_hint);
+
+        var buttons = new[] { _bGmsDisable, _bGmsEnable, _bOwnSetup, _bOwnRemove, _bOwnStop };
+        int y = 104;
+        for (int i = 0; i < buttons.Length; i++)
+        {
+            buttons[i].Location = new Point(18 + (i % 2) * 236, y + (i / 2) * 52);
+            Controls.Add(buttons[i]);
         }
-        y += 3 * 48 + 12;
-        _bGmsDisable.Click += (_, _) => Do("GMS выключен", () =>
+        y += 3 * 52 + 14;
+
+        _bGmsDisable.Click += (_, _) => Do("GameManager disabled", () =>
         {
             var (o1, c1) = Svc.Run("sc", $"stop \"{Svc.Gms}\"");
             var (o2, c2) = Svc.Run("sc", $"config \"{Svc.Gms}\" start= disabled");
-            return $"stop[{c1}] {FirstLine(o1)}\nconfig[{c2}] {FirstLine(o2)}";
+            return $"stop[{c1}] {FirstLine(o1)} | config[{c2}] {FirstLine(o2)}";
         });
-        _bGmsEnable.Click += (_, _) => Do("GMS включен", () =>
+        _bGmsEnable.Click += (_, _) => Do("GameManager enabled", () =>
         {
             var (o1, c1) = Svc.Run("sc", $"config \"{Svc.Gms}\" start= demand");
             var (o2, c2) = Svc.Run("sc", $"start \"{Svc.Gms}\"");
-            return $"config[{c1}] {FirstLine(o1)}\nstart[{c2}] {FirstLine(o2)}";
+            return $"config[{c1}] {FirstLine(o1)} | start[{c2}] {FirstLine(o2)}";
         });
-        _bOwnInstall.Click += (_, _) => Do("сервис установлен", () =>
+        _bOwnSetup.Click += (_, _) =>
         {
-            var exe = Svc.ServiceExe();
-            if (!File.Exists(exe)) return $"не найден {exe} — положите setup рядом с rzswitch.exe";
-            var (o1, c1) = Svc.Run("sc", $"create {Svc.Own} binPath= \"{exe}\" start= auto");
-            var (o2, c2) = Svc.Run("sc", $"description {Svc.Own} \"Razer GameManager replacement: foreground detector + SignalR hub\"");
-            return $"create[{c1}] {FirstLine(o1)}\ndesc[{c2}] {FirstLine(o2)}";
-        });
-        _bOwnRemove.Click += (_, _) => Do("сервис удален", () =>
-        {
-            var (o1, c1) = Svc.Run("sc", $"stop {Svc.Own}");
-            var (o2, c2) = Svc.Run("sc", $"delete {Svc.Own}");
-            return $"stop[{c1}] {FirstLine(o1)}\ndelete[{c2}] {FirstLine(o2)}";
-        });
-        _bOwnStart.Click += (_, _) =>
-        {
+            if (!Svc.Query(Svc.Own).Exists)
+            {
+                Do("service installed", () =>
+                {
+                    var exe = Svc.ServiceExe();
+                    if (!File.Exists(exe)) return $"missing {exe} — keep setup next to rzswitch.exe";
+                    var (o1, c1) = Svc.Run("sc", $"create {Svc.Own} binPath= \"{exe}\" start= auto");
+                    var (o2, c2) = Svc.Run("sc", $"description {Svc.Own} \"Razer GameManager replacement: foreground detector + SignalR hub\"");
+                    return $"create[{c1}] {FirstLine(o1)} | desc[{c2}] {FirstLine(o2)}";
+                });
+            }
             var gms = Svc.Query(Svc.Gms);
             if (gms.Exists && (gms.Status == "Running" || gms.StartType != "disabled"))
             {
-                Log("Отказ: GameManager активен — сначала выключите его.");
+                Log("Installed, but start blocked: GameManager is active — disable it first.");
+                RefreshStatus();
                 return;
             }
-            Do("наш сервис запущен", () =>
+            Do("our service started", () =>
             {
                 var (o, c) = Svc.Run("sc", $"start {Svc.Own}");
                 return $"start[{c}] {FirstLine(o)}";
             });
         };
-        _bOwnStop.Click += (_, _) => Do("наш сервис остановлен", () =>
+        _bOwnStop.Click += (_, _) => Do("our service stopped", () =>
         {
             var (o, c) = Svc.Run("sc", $"stop {Svc.Own}");
             return $"stop[{c}] {FirstLine(o)}";
+        });
+        _bOwnRemove.Click += (_, _) => Do("service removed", () =>
+        {
+            var (o1, c1) = Svc.Run("sc", $"stop {Svc.Own}");
+            var (o2, c2) = Svc.Run("sc", $"delete {Svc.Own}");
+            return $"stop[{c1}] {FirstLine(o1)} | delete[{c2}] {FirstLine(o2)}";
         });
 
         _log.Multiline = true;
         _log.ReadOnly = true;
         _log.ScrollBars = ScrollBars.Vertical;
-        _log.BackColor = Color.Black;
+        _log.BorderStyle = BorderStyle.None;
+        _log.BackColor = Color.FromArgb(8, 8, 8);
         _log.ForeColor = Color.Lime;
         _log.Font = new Font("Consolas", 9);
         _log.Location = new Point(18, y);
-        _log.Size = new Size(460, 180);
+        _log.Size = new Size(484, 190);
         Controls.Add(_log);
+        _log.BringToFront();
 
         _timer.Interval = 2000;
         _timer.Tick += (_, _) => RefreshStatus();
@@ -250,13 +278,13 @@ sealed class SetupForm : Form
     {
         var gms = Svc.Query(Svc.Gms);
         var own = Svc.Query(Svc.Own);
-        _gmsState.Text = $"GMS:   {(gms.Status == "Running" ? "●" : "○")} {gms.Status} / {gms.StartType}";
-        _gmsState.ForeColor = gms.Status == "Running" ? Color.Lime : Color.Gray;
-        _ownState.Text = $"OURS:  {(own.Status == "Running" ? "●" : "○")} {own.Status} / {own.StartType}";
-        _ownState.ForeColor = own.Status == "Running" ? Color.Lime : Color.Gray;
         bool gmsActive = gms.Exists && (gms.Status == "Running" || gms.StartType != "disabled");
-        _bOwnStart.Enabled = !gmsActive;
-        _bOwnInstall.Enabled = own is { Exists: false };
+        _hint.Text = gmsActive
+            ? "GameManager is active — disable it to unlock our service."
+            : !own.Exists ? "Install the service to begin."
+            : own.Status != "Running" ? "Service is here — press Install & Start."
+            : "Running. Profile auto-switch is on.";
+        _bOwnSetup.Enabled = own.Status != "Running";
         _bOwnRemove.Enabled = own.Exists;
         _bOwnStop.Enabled = own.Status == "Running";
         _bGmsDisable.Enabled = gms.Exists && (gms.Status == "Running" || gms.StartType != "disabled");

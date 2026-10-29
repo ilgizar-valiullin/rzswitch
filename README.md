@@ -28,18 +28,17 @@ exe list from your UserGameList + switching only on the active window.
 
 ## Installer panel (`setup/`)
 
-`rzswitch-setup.exe` — WinForms installer panel, Razer-styled (black +
-neon green). Runs elevated (manifest requests administrator).
+`rzswitch-setup.exe` — borderless WinForms installer panel, Razer-styled
+(black + neon green, custom title bar, no status line — state is conveyed
+by button availability plus a hint line). Runs elevated (manifest requests
+administrator).
 
-- Status cards: GameManager (Razer) and rzswitch — Running/Stopped,
-  start type, live refresh.
-- Buttons: install/remove rzswitch service, start/stop it,
-  disable/enable GameManager (`stop` + `start= disabled` /
-  `start= demand` + `start`).
-- Interlock: the enable-ours button is disabled while GameManager is
-  active (port/registry conflict) — enforced in the UI and re-checked
-  server-side on click.
-- sc.exe output log at the bottom.
+- Buttons: disable/enable GameManager, **Install & Start our service**
+  (single button: installs if missing, then starts), stop/remove it.
+- Interlock: start is performed only while GameManager is disabled.
+  If GameManager is active, the panel installs (if needed) and tells you
+  to disable GameManager first.
+- sc.exe output log at the bottom, live refresh.
 
 Build: `dotnet build setup/rzswitch-setup.csproj -c Release`.
 Publish both into one folder so the installer finds the service binary
@@ -72,7 +71,7 @@ sc config "Razer Game Manager Service 3" start= disabled
 :: 2. Start Synapse (it applies the profiles)
 
 :: 3a. Installer panel (admin): publish\rzswitch-setup.exe
-::     -> "Install service", then "Enable our service"
+::     -> "Install & Start our service"
 :: 3b. Or web panel: run publish\rzswitch.exe elevated, open the URL it logs
 ```
 
