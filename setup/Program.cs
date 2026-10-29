@@ -80,7 +80,6 @@ sealed class SetupForm : Form
 {
     private sealed class RzButton : Button
     {
-        public bool Primary;
         public RzButton(string text)
         {
             Text = text;
@@ -111,7 +110,6 @@ sealed class SetupForm : Form
             var isHover = on && ClientRectangle.Contains(PointToClient(Cursor.Position));
             Color bg, fg;
             if (!on) { bg = Color.FromArgb(17, 17, 17); fg = Color.FromArgb(85, 85, 85); }
-            else if (Primary) { bg = isHover ? Color.FromArgb(80, 230, 50) : Color.FromArgb(68, 221, 34); fg = Color.Black; }
             else { bg = isHover ? Color.FromArgb(42, 42, 42) : Color.FromArgb(17, 17, 17); fg = isHover ? Color.White : Color.FromArgb(204, 204, 204); }
             using var path = Pill(ClientRectangle, Height / 2);
             using var b = new SolidBrush(bg);
@@ -196,8 +194,6 @@ sealed class SetupForm : Form
         {
             if (e.Button == MouseButtons.Left) { Left += e.X - _drag.X; Top += e.Y - _drag.Y; }
         };
-
-        _bOwnSetup.Primary = true;
 
         var gmsLabel = new Label
         {
