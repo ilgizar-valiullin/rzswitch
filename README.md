@@ -1,81 +1,78 @@
 # rzswitch
 
-EN: lightweight replacement for Razer GameManagerService3. Watches the
+Lightweight replacement for Razer GameManagerService3. Watches the
 foreground window and notifies Synapse via the same SignalR hub contract
 (`/GameManagerServiceHub`), so Synapse auto-switches profiles — without the
-stock detector service (138+ MB, 25 MB logs, missed detections on
+stock detector service (138+ MB RAM, 25 MB of logs, missed detections on
 launcher/child processes).
 
-RU: легкая замена службе Razer Game Manager Service 3. Следит за активным
-окном и уведомляет Synapse по тому же SignalR-контракту, поэтому Synapse
-переключает профили — без штатного детектора (138+ МБ, 25 МБ логов,
-пропуски детекта на лаунчерах/дочерних процессах).
+## How it works
 
-## Как это работает
+1. Stock GameManager hosts Kestrel on `127.0.0.1:<dynamic port>`, writes the
+   port to `HKLM\Software\Razer\Services\GMS3\ServerPort`, and serves the
+   SignalR hub `/GameManagerServiceHub`.
+2. Synapse (RazerAppEngine) reads the port from the registry, connects, and
+   receives `OnGameStartedWithPidEvent({pid, signature})` /
+   `OnGameStoppedWithPidEvent(...)`, then applies the linked profile.
+3. `rzswitch` does the same: reads the port from the registry (or listens on
+   a dynamic port and writes it back to the registry itself, like the
+   original), loads the game list from the shared `UserGameList_*.xml` files
+   (the same files whose paths are published in the registry as
+   `UserGameListPath`, `LocalGameListPath`, `GameSettingsListPath`), and
+   pushes events on window focus — only when a game is actually foreground.
 
-1. Штатный GameManager поднимает Kestrel на `127.0.0.1:<динамический порт>`,
-   пишет порт в `HKLM\Software\Razer\Services\GMS3\ServerPort` и раздает
-   SignalR-хаб `/GameManagerServiceHub`.
-2. Synapse (RazerAppEngine) читает порт из реестра, коннектится и получает
-   `OnGameStartedWithPidEvent({pid, signature})` /
-   `OnGameStoppedWithPidEvent(...)`, после чего применяет привязанный профиль.
-3. `rzswitch` делает то же самое: читает порт из реестра (или слушает
-   динамический и сам пишет его в реестр, как оригинал), читает список игр
-   из общих `UserGameList_*.xml` (те же файлы, пути которых опубликованы
-   в реестре: `UserGameListPath`, `LocalGameListPath`, `GameSettingsListPath`)
-   и пушит события по фокусу окна — только когда игра реально foreground.
+The stock detector skips games launched via launchers
+(`Is LaunchHelper / Is child process, so not notifying GameStarted` — visible
+in its own logs) and fires noise on every Edge renderer process. Here: exact
+exe list from your UserGameList + switching only on the active window.
 
-Детект штатного сервиса пропускает игры, запущенные через лаунчеры
-(`Is LaunchHelper / Is child process, so not notifying GameStarted` — видно
-в его же логах), и шумит на каждый процесс Edge. Здесь: точный список exe
-из вашего UserGameList + переключение только по активному окну.
+## Control panel
 
-## Панель управления
+On startup (console or service) a Razer-styled web panel is served:
 
-При запуске (консоль или сервис) открывается веб-панель в стиле Razer:
+- status of GameManager (Razer) and rzswitch: Running/Stopped, start type;
+- buttons: disable/enable GameManager, install/remove/start/stop the
+  rzswitch service;
+- interlock: the enable-ours button is unavailable while GameManager is
+  active (port/registry conflict) — enforced both in the UI and server-side;
+- live log tail with auto-refresh every 2 seconds.
 
-- статус GameManager (Razer) и rzswitch: Running/Stopped, тип старта;
-- кнопки: выключить/включить GameManager, установить/удалить/старт/стоп
-  сервис rzswitch;
-- связка: кнопка включения нашего сервиса недоступна, пока активен
-  GameManager (конфликт порта/реестра) — проверка и в UI, и на сервере;
-- хвост лога с автообновлением.
+Actions shell out to `sc.exe` and write to HKLM, so run elevated —
+otherwise buttons report access errors. A banner in the panel warns when
+running non-elevated. No external assets: single self-contained page,
+works offline.
 
-Действия через `sc.exe` и запись в HKLM требуют прав администратора —
-запускайте панель elevated.
-
-## Установка
+## Install
 
 ```bat
-:: 1. Остановить и выключить оригинал (admin)
+:: 1. Stop and disable the original (admin)
 sc stop "Razer Game Manager Service 3"
 sc config "Razer Game Manager Service 3" start= disabled
 
-:: 2. Запустить Synapse (он применяет профили)
+:: 2. Start Synapse (it applies the profiles)
 
-:: 3. Панель (admin) -> кнопка "Установить сервис", затем "Включить наш сервис"
+:: 3. Panel (admin) -> "Install service", then "Enable our service"
 rzswitch.exe
-:: открыть http://127.0.0.1:<порт> (порт виден в логе и в реестре ServerPort)
+:: open http://127.0.0.1:<port> (port is in the log and in registry ServerPort)
 ```
 
-Откат: кнопка «Включить GMS» в панели (`start= demand` + старт) либо
-вручную `sc config` обратно; удалить наш сервис — кнопка в панели.
+Rollback: the panel's "Enable GMS" button (`start= demand` + start), or
+`sc config` back manually; remove our service with the panel button.
 
-## Сборка
+## Build
 
 ```
 dotnet build -c Release
 ```
 
-.NET 8+ SDK. Один файл `Program.cs`, рантайм-зависимостей кроме
-ASP.NET Core нет. Windows-only (HID-детект окна, реестр, службы).
+.NET 8+ SDK. Single-file `Program.cs`, no runtime dependencies beyond
+ASP.NET Core. Windows-only (window detection, registry, services).
 
-## Статус
+## Status
 
-Прототип работает: хаб поднимается, игры грузятся из UserGameList,
-события START/STOP уходят подписчикам. Проверено против живого Synapse —
-см. Issues.
+Working prototype: hub comes up, games load from UserGameList, START/STOP
+events go out to subscribers. Verified against a live Synapse — see Issues.
 
 ## License
 
-MIT, см. `LICENSE`.
+MIT, see `LICENSE`.
