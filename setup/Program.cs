@@ -7,7 +7,6 @@ using System.Diagnostics;
 using System.Drawing;
 using System.IO;
 using System.Linq;
-using System.Runtime.InteropServices;
 using System.ServiceProcess;
 using System.Windows.Forms;
 
@@ -75,12 +74,6 @@ static class Svc
 
     public static string ServiceExe() =>
         Path.Combine(AppContext.BaseDirectory, "rzswitch.exe");
-}
-
-static class Native
-{
-    [DllImport("uxtheme.dll", CharSet = CharSet.Unicode)]
-    public static extern int SetWindowTheme(IntPtr hwnd, string? subApp, string? clsList);
 }
 
 sealed class SetupForm : Form
@@ -286,16 +279,14 @@ sealed class SetupForm : Form
 
         _log.Multiline = true;
         _log.ReadOnly = true;
-        _log.ScrollBars = ScrollBars.Vertical;
+        _log.ScrollBars = ScrollBars.None;
         _log.BorderStyle = BorderStyle.None;
         _log.BackColor = Color.FromArgb(17, 17, 17);
         _log.ForeColor = Color.FromArgb(204, 204, 204);
         _log.Font = new Font("Consolas", 9);
         _log.Location = new Point(18, y);
         _log.Size = new Size(484, 190);
-        _log.HandleCreated += (_, _) => Native.SetWindowTheme(_log.Handle, "", "");
         Controls.Add(_log);
-        if (_log.IsHandleCreated) Native.SetWindowTheme(_log.Handle, "", "");
         _log.BringToFront();
 
         _timer.Interval = 2000;
