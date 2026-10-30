@@ -250,6 +250,70 @@ internal static class Svc
         Path.Combine(AppContext.BaseDirectory, "rzswitch.exe");
 }
 
+// ================= GMS guard: fastest status check, no enumeration, no child processes =================
+internal static class GmsGuard
+{
+    private const uint SC_MANAGER_CONNECT = 0x0001;
+    private const uint SERVICE_QUERY_STATUS = 0x0004;
+    private const int SC_STATUS_PROCESS_INFO = 0;
+
+    private const int SERVICE_STOPPED = 0x1;
+    private const int SERVICE_START_PENDING = 0x2;
+    private const int SERVICE_STOP_PENDING = 0x3;
+    private const int SERVICE_RUNNING = 0x4;
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct SERVICE_STATUS_PROCESS
+    {
+        public int dwServiceType;
+        public int dwCurrentState;
+        public int dwControlsAccepted;
+        public int dwWin32ExitCode;
+        public int dwServiceSpecificExitCode;
+        public int dwCheckPoint;
+        public int dwWaitHint;
+        public int dwProcessId;
+        public int dwServiceFlags;
+    }
+
+    [DllImport("advapi32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    private static extern IntPtr OpenSCManager(string? machine, string? db, uint access);
+    [DllImport("advapi32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    private static extern IntPtr OpenService(IntPtr hSC, string name, uint access);
+    [DllImport("advapi32.dll", SetLastError = true)]
+    private static extern bool QueryServiceStatusEx(IntPtr h, int level, ref SERVICE_STATUS_PROCESS buf, int size, out int needed);
+    [DllImport("advapi32.dll", SetLastError = true)]
+    private static extern bool CloseServiceHandle(IntPtr h);
+
+    // null = no such service (or SCM unavailable); otherwise SCM state code
+    public static int? State(string name)
+    {
+        IntPtr scm = OpenSCManager(null, null, SC_MANAGER_CONNECT);
+        if (scm == IntPtr.Zero) return null;
+        try
+        {
+            IntPtr svc = OpenService(scm, name, SERVICE_QUERY_STATUS);
+            if (svc == IntPtr.Zero) return null;
+            try
+            {
+                var st = new SERVICE_STATUS_PROCESS();
+                if (!QueryServiceStatusEx(svc, SC_STATUS_PROCESS_INFO, ref st, Marshal.SizeOf<SERVICE_STATUS_PROCESS>(), out _))
+                    return null;
+                return st.dwCurrentState;
+            }
+            finally { CloseServiceHandle(svc); }
+        }
+        finally { CloseServiceHandle(scm); }
+    }
+
+    public static bool IsActive(string name, out int state)
+    {
+        var s = State(name);
+        state = s ?? -1;
+        return s is SERVICE_RUNNING or SERVICE_START_PENDING;
+    }
+}
+
 // ================= UI =================
 internal static class Ui
 {
@@ -420,6 +484,7 @@ public static class Program
         log.LogInformation("hub on 127.0.0.1:{p}, games: {n}", port, state.Games.Count);
 
         MapUi(app, state, log);
+        _ = GuardLoop(app, state, log);
         _ = WatchLoop(app, state, log);
         await app.WaitForShutdownAsync();
     }
@@ -524,6 +589,33 @@ public static class Program
                 var (o, c) = Svc.Run("sc", $"stop {Svc.Own}");
                 return $"stop[{c}]\n{o}";
             }), "text/html; charset=utf-8"));
+    }
+
+    // GMS guard: every 30s a sub-millisecond SCM check; if Razer restarted
+    // GameManager, stop it, pin it to disabled and take ServerPort back.
+    private static async Task GuardLoop(WebApplication app, RzState state, ILogger log)
+    {
+        static string First(string s) => s.Split('\n').FirstOrDefault()?.Trim() ?? "";
+        var stop = app.Lifetime.ApplicationStopping;
+        while (!stop.IsCancellationRequested)
+        {
+            try
+            {
+                if (GmsGuard.IsActive(Svc.Gms, out var st))
+                {
+                    log.LogWarning("GMS guard: GameManager active (state={s}), stopping", st);
+                    var (o1, c1) = Svc.Run("sc", $"stop \"{Svc.Gms}\"");
+                    var (o2, c2) = Svc.Run("sc", $"config \"{Svc.Gms}\" start= disabled");
+                    WriteServerPort(state.BoundPort, log);
+                    state.LastEvent = $"GMS guard: stopped GameManager (stop[{c1}] config[{c2}])";
+                    log.LogWarning("{e}: {o1} | {o2}", state.LastEvent, First(o1), First(o2));
+                }
+                // registry is touched only when GMS actually started itself (see branch above)
+            }
+            catch (Exception ex) { log.LogWarning("guard: {m}", ex.Message); }
+            try { await Task.Delay(TimeSpan.FromSeconds(30), stop); }
+            catch { break; }
+        }
     }
 
     private static async Task WatchLoop(WebApplication app, RzState state, ILogger log)
