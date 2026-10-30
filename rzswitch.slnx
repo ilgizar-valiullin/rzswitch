@@ -1,0 +1,6 @@
+<Solution>
+  <Folder Name="/setup/">
+    <Project Path="setup/rzswitch-setup.csproj" />
+  </Folder>
+  <Project Path="rzswitch.csproj" />
+</Solution>

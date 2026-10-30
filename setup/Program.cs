@@ -90,7 +90,7 @@ sealed class SetupForm : Form
             Font = new Font("Segoe UI", 10, FontStyle.Bold);
             Size = new Size(224, 44);
             BackColor = Color.FromArgb(34, 34, 34);
-            SetStyle(ControlStyles.UserPaint | ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer, true);
+            SetStyle(ControlStyles.UserPaint | ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer | ControlStyles.ResizeRedraw, true);
         }
         private static System.Drawing.Drawing2D.GraphicsPath Pill(Rectangle r, int rad)
         {
@@ -107,13 +107,20 @@ sealed class SetupForm : Form
         {
             var g = e.Graphics;
             g.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
+            g.PixelOffsetMode = System.Drawing.Drawing2D.PixelOffsetMode.Half;
+            g.TextRenderingHint = System.Drawing.Text.TextRenderingHint.ClearTypeGridFit;
             using (var bg0 = new SolidBrush(BackColor)) g.FillRectangle(bg0, ClientRectangle);
             var on = Enabled && !DesignMode;
             var isHover = on && ClientRectangle.Contains(PointToClient(Cursor.Position));
             Color bg, fg;
             if (!on) { bg = Color.FromArgb(17, 17, 17); fg = Color.FromArgb(85, 85, 85); }
             else { bg = isHover ? Color.FromArgb(42, 42, 42) : Color.FromArgb(17, 17, 17); fg = isHover ? Color.White : Color.FromArgb(204, 204, 204); }
-            using var path = Pill(ClientRectangle, Height / 2);
+            // Inset by 1px: Region выкинут (он 1-битный и дает рваный край),
+            // пилюля рисуется внутри прямоугольного контрола — край
+            // сглаживается о фон BackColor, перо 2px не клиппится.
+            var rect = ClientRectangle;
+            rect.Inflate(-1, -1);
+            using var path = Pill(rect, rect.Height / 2);
             if (Frame.HasValue)
             {
                 var ink = Ink ?? Frame.Value;
@@ -123,17 +130,18 @@ sealed class SetupForm : Form
                     g.FillPath(hb, path);
                 }
                 using var pen = new Pen(Frame.Value, 2);
+                pen.Alignment = System.Drawing.Drawing2D.PenAlignment.Center;
                 g.DrawPath(pen, path);
                 using var brush2 = new SolidBrush(on ? ink : Color.FromArgb(120, 110, 100));
-                var fmt2 = new StringFormat { Alignment = StringAlignment.Center, LineAlignment = StringAlignment.Center };
-                g.DrawString(Text, Font, brush2, ClientRectangle, fmt2);
+                using var fmt2 = new StringFormat { Alignment = StringAlignment.Center, LineAlignment = StringAlignment.Center };
+                g.DrawString(Text, Font, brush2, rect, fmt2);
                 return;
             }
             using var b = new SolidBrush(bg);
             g.FillPath(b, path);
             using var brush = new SolidBrush(fg);
-            var fmt = new StringFormat { Alignment = StringAlignment.Center, LineAlignment = StringAlignment.Center };
-            g.DrawString(Text, Font, brush, ClientRectangle, fmt);
+            using var fmt = new StringFormat { Alignment = StringAlignment.Center, LineAlignment = StringAlignment.Center };
+            g.DrawString(Text, Font, brush, rect, fmt);
         }
         protected override void OnMouseEnter(EventArgs e) { base.OnMouseEnter(e); Invalidate(); }
         protected override void OnMouseLeave(EventArgs e) { base.OnMouseLeave(e); Invalidate(); }
@@ -198,7 +206,7 @@ sealed class SetupForm : Form
             Frame = Color.FromArgb(255, 150, 50),
             Ink = Color.FromArgb(255, 170, 80),
             Size = new Size(150, 28),
-            Location = new Point(316, 14),
+            Location = new Point(316, 21),
             Cursor = Cursors.Hand,
         };
         coffee.Font = new Font("Segoe UI", 9);
@@ -213,8 +221,9 @@ sealed class SetupForm : Form
             Text = "X",
             ForeColor = Color.FromArgb(120, 120, 120),
             Font = new Font("Segoe UI", 13, FontStyle.Bold),
-            Location = new Point(482, 10),
-            AutoSize = true,
+            Location = new Point(482, 19),
+            Size = new Size(30, 28),
+            TextAlign = ContentAlignment.MiddleCenter,
             Cursor = Cursors.Hand,
         };
         close.MouseEnter += (_, _) => close.ForeColor = Color.Red;
@@ -365,7 +374,7 @@ sealed class SetupForm : Form
         _bOwnSetup.Enabled = own.Status != "Running";
         _bOwnRemove.Enabled = own.Exists;
         _bGmsDisable.Enabled = gms.Exists && (gms.Status == "Running" || gms.StartType != "disabled");
-        _bGmsEnable.Enabled = gms.Exists && (gms.Status != "Running" || gms.StartType == "disabled");
+        _bGmsEnable.Enabled = gms.Exists && (gms.Status != "Running" || gms.StartType == "disabled") && own.Status != "Running";
     }
 }
 

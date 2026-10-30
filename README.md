@@ -40,10 +40,17 @@ administrator).
   to disable GameManager first.
 - sc.exe output log at the bottom, live refresh.
 
-Build: `dotnet build setup/rzswitch-setup.csproj -c Release`.
-Publish both into one folder so the installer finds the service binary
-next to itself:
-`dotnet publish setup/rzswitch-setup.csproj -c Release -o publish/`.
+Build (solution `rzswitch.slnx` holds both projects).
+Clean + publish everything into one folder so the installer finds
+the service binary next to itself:
+
+```bat
+dotnet publish setup/rzswitch-setup.csproj -c Release -o publish/
+dotnet publish rzswitch.csproj -c Release -o publish/
+```
+
+Note: `publish/rzswitch.exe` is locked while the `rzswitch` service
+is running — `sc stop rzswitch` (admin) before re-publishing it.
 
 ## Control panel (web)
 
@@ -81,11 +88,11 @@ Rollback: the panel's "Enable GMS" button (`start= demand` + start), or
 ## Build
 
 ```
-dotnet build -c Release
+dotnet build rzswitch.slnx -c Release
 ```
 
-.NET 8+ SDK. Single-file `Program.cs`, no runtime dependencies beyond
-ASP.NET Core. Windows-only (window detection, registry, services).
+.NET 10 SDK. `rzswitch.csproj` = service, `setup/` = installer panel
+(`rzswitch-setup.exe`). Windows-only (window detection, registry, services).
 
 ## Status
 
