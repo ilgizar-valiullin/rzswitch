@@ -7,6 +7,7 @@ using System.Diagnostics;
 using System.Drawing;
 using System.IO;
 using System.Linq;
+using System.Runtime.InteropServices;
 using System.ServiceProcess;
 using System.Windows.Forms;
 
@@ -74,6 +75,12 @@ static class Svc
 
     public static string ServiceExe() =>
         Path.Combine(AppContext.BaseDirectory, "rzswitch.exe");
+}
+
+static class Native
+{
+    [DllImport("uxtheme.dll", CharSet = CharSet.Unicode)]
+    public static extern int SetWindowTheme(IntPtr hwnd, string? subApp, string? clsList);
 }
 
 sealed class SetupForm : Form
@@ -220,6 +227,7 @@ sealed class SetupForm : Form
         _hint.Location = new Point(20, 222);
         _hint.AutoSize = true;
         _hint.MaximumSize = new Size(484, 0);
+        _hint.UseMnemonic = false;
         Controls.Add(_hint);
 
         var buttons = new[] { _bGmsDisable, _bGmsEnable, _bOwnSetup, _bOwnRemove };
@@ -250,7 +258,7 @@ sealed class SetupForm : Form
                 Do("service installed", () =>
                 {
                     var exe = Svc.ServiceExe();
-                    if (!File.Exists(exe)) return $"missing {exe} вЂ” keep setup next to rzswitch.exe";
+                    if (!File.Exists(exe)) return $"missing {exe} - keep setup next to rzswitch.exe";
                     var (o1, c1) = Svc.Run("sc", $"create {Svc.Own} binPath= \"{exe}\" start= auto");
                     var (o2, c2) = Svc.Run("sc", $"description {Svc.Own} \"Razer GameManager replacement: foreground detector + SignalR hub\"");
                     return $"create[{c1}] {FirstLine(o1)} | desc[{c2}] {FirstLine(o2)}";
@@ -259,7 +267,7 @@ sealed class SetupForm : Form
             var gms = Svc.Query(Svc.Gms);
             if (gms.Exists && (gms.Status == "Running" || gms.StartType != "disabled"))
             {
-                Log("Installed, but start blocked: GameManager is active вЂ” disable it first.");
+                Log("Installed, but start blocked: GameManager is active - disable it first.");
                 RefreshStatus();
                 return;
             }
@@ -285,7 +293,9 @@ sealed class SetupForm : Form
         _log.Font = new Font("Consolas", 9);
         _log.Location = new Point(18, y);
         _log.Size = new Size(484, 190);
+        _log.HandleCreated += (_, _) => Native.SetWindowTheme(_log.Handle, "", "");
         Controls.Add(_log);
+        if (_log.IsHandleCreated) Native.SetWindowTheme(_log.Handle, "", "");
         _log.BringToFront();
 
         _timer.Interval = 2000;
@@ -317,9 +327,9 @@ sealed class SetupForm : Form
         var own = Svc.Query(Svc.Own);
         bool gmsActive = gms.Exists && (gms.Status == "Running" || gms.StartType != "disabled");
         _hint.Text = gmsActive
-            ? "GameManager is active вЂ” disable it to unlock our service."
+            ? "GameManager is active - disable it to unlock our service."
             : !own.Exists ? "Install the service to begin."
-            : own.Status != "Running" ? "Service is here вЂ” press Install & Start."
+            : own.Status != "Running" ? "Service is here - press Install & Start."
             : "Running. Profile auto-switch is on.";
         _bOwnSetup.Enabled = own.Status != "Running";
         _bOwnRemove.Enabled = own.Exists;
