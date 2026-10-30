@@ -401,6 +401,11 @@ public static class Program
                 catch { }
             }
         }
+        if (port > 0 && !IsFree(port))
+        {
+            log.LogWarning("port {p} busy, falling back to dynamic", port);
+            port = 0;
+        }
 
         // dynamic loopback port like stock GMS, then publish to registry
         app.Urls.Clear();
@@ -417,6 +422,18 @@ public static class Program
         MapUi(app, state, log);
         _ = WatchLoop(app, state, log);
         await app.WaitForShutdownAsync();
+    }
+
+    private static bool IsFree(int port)
+    {
+        try
+        {
+            using var t = new System.Net.Sockets.TcpListener(System.Net.IPAddress.Loopback, port);
+            t.Start();
+            t.Stop();
+            return true;
+        }
+        catch { return false; }
     }
 
     private static void WriteServerPort(int port, ILogger log)
