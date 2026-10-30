@@ -80,6 +80,8 @@ sealed class SetupForm : Form
 {
     private sealed class RzButton : Button
     {
+        public Color? Frame;
+        public Color? Ink;
         public RzButton(string text)
         {
             Text = text;
@@ -112,6 +114,21 @@ sealed class SetupForm : Form
             if (!on) { bg = Color.FromArgb(17, 17, 17); fg = Color.FromArgb(85, 85, 85); }
             else { bg = isHover ? Color.FromArgb(42, 42, 42) : Color.FromArgb(17, 17, 17); fg = isHover ? Color.White : Color.FromArgb(204, 204, 204); }
             using var path = Pill(ClientRectangle, Height / 2);
+            if (Frame.HasValue)
+            {
+                var ink = Ink ?? Frame.Value;
+                if (isHover)
+                {
+                    using var hb = new SolidBrush(Color.FromArgb(28, Frame.Value.R, Frame.Value.G, Frame.Value.B));
+                    g.FillPath(hb, path);
+                }
+                using var pen = new Pen(Frame.Value, 2);
+                g.DrawPath(pen, path);
+                using var brush2 = new SolidBrush(on ? ink : Color.FromArgb(120, 110, 100));
+                var fmt2 = new StringFormat { Alignment = StringAlignment.Center, LineAlignment = StringAlignment.Center };
+                g.DrawString(Text, Font, brush2, ClientRectangle, fmt2);
+                return;
+            }
             using var b = new SolidBrush(bg);
             g.FillPath(b, path);
             using var brush = new SolidBrush(fg);
@@ -127,7 +144,7 @@ sealed class SetupForm : Form
     private readonly RzButton _bOwnSetup = new("Install & Start our service");
     private readonly RzButton _bOwnRemove = new("Remove our service");
     private readonly Label _hint = new();
-    private readonly TextBox _log = new();
+    private readonly RichTextBox _log = new();
     private readonly System.Windows.Forms.Timer _timer = new();
     private Point _drag;
 
@@ -176,17 +193,15 @@ sealed class SetupForm : Form
             AutoSize = true,
         };
         header.Controls.Add(sub);
-        var coffee = new Label
+        var coffee = new RzButton("Buy me a coffee")
         {
-            Text = "Buy me a coffee",
-            ForeColor = Color.FromArgb(150, 150, 150),
-            Font = new Font("Segoe UI", 9, FontStyle.Underline),
-            Location = new Point(348, 12),
-            AutoSize = true,
+            Frame = Color.FromArgb(255, 150, 50),
+            Ink = Color.FromArgb(255, 170, 80),
+            Size = new Size(150, 28),
+            Location = new Point(316, 14),
             Cursor = Cursors.Hand,
         };
-        coffee.MouseEnter += (_, _) => coffee.ForeColor = Color.White;
-        coffee.MouseLeave += (_, _) => coffee.ForeColor = Color.FromArgb(150, 150, 150);
+        coffee.Font = new Font("Segoe UI", 9);
         coffee.Click += (_, _) =>
         {
             try { Process.Start(new ProcessStartInfo("https://destream.net/live/CucumberKing/donate") { UseShellExecute = true }); }
@@ -296,7 +311,7 @@ sealed class SetupForm : Form
 
         _log.Multiline = true;
         _log.ReadOnly = true;
-        _log.ScrollBars = ScrollBars.None;
+        _log.ScrollBars = RichTextBoxScrollBars.None;
         _log.BorderStyle = BorderStyle.None;
         _log.BackColor = Color.FromArgb(17, 17, 17);
         _log.ForeColor = Color.FromArgb(204, 204, 204);
@@ -310,14 +325,22 @@ sealed class SetupForm : Form
         _timer.Tick += (_, _) => RefreshStatus();
         _timer.Start();
         RefreshStatus();
+        var svc = Svc.Query(Svc.Own);
+        if (svc.Exists && svc.Status == "Running")
+            Log("Service is installed and running.", Color.FromArgb(68, 221, 34));
     }
 
     private static string FirstLine(string s) =>
         s.Split('\n').FirstOrDefault()?.Trim() ?? "";
 
-    private void Log(string s)
+    private void Log(string s, Color? color = null)
     {
+        _log.SelectionStart = _log.TextLength;
+        _log.SelectionLength = 0;
+        _log.SelectionColor = color ?? _log.ForeColor;
         _log.AppendText($"[{DateTime.Now:HH:mm:ss}] {s}{Environment.NewLine}");
+        _log.SelectionColor = _log.ForeColor;
+        _log.ScrollToCaret();
     }
 
     private void Do(string label, Func<string> act)
