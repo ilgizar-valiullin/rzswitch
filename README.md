@@ -1,103 +1,43 @@
 # rzswitch
 
-Lightweight replacement for Razer GameManagerService3. Watches the
-foreground window and notifies Synapse via the same SignalR hub contract
-(`/GameManagerServiceHub`), so Synapse auto-switches profiles — without the
-stock detector service (138+ MB RAM, 25 MB of logs, missed detections on
-launcher/child processes).
+Your Razer profiles switch automatically when you switch games — without Razer's heavy background service running.
 
-## How it works
+Razer Synapse changes profiles per game, but its stock detector is heavy, noisy, and sometimes misses games launched via launchers. rzswitch is a tiny replacement: it watches which window is in front and tells Synapse to switch the profile. Same result, fraction of the footprint.
 
-1. Stock GameManager hosts Kestrel on `127.0.0.1:<dynamic port>`, writes the
-   port to `HKLM\Software\Razer\Services\GMS3\ServerPort`, and serves the
-   SignalR hub `/GameManagerServiceHub`.
-2. Synapse (RazerAppEngine) reads the port from the registry, connects, and
-   receives `OnGameStartedWithPidEvent({pid, signature})` /
-   `OnGameStoppedWithPidEvent(...)`, then applies the linked profile.
-3. `rzswitch` does the same: reads the port from the registry (or listens on
-   a dynamic port and writes it back to the registry itself, like the
-   original), loads the game list from the shared `UserGameList_*.xml` files
-   (the same files whose paths are published in the registry as
-   `UserGameListPath`, `LocalGameListPath`, `GameSettingsListPath`), and
-   pushes events on window focus — only when a game is actually foreground.
+## What you need
 
-The stock detector skips games launched via launchers
-(`Is LaunchHelper / Is child process, so not notifying GameStarted` — visible
-in its own logs) and fires noise on every Edge renderer process. Here: exact
-exe list from your UserGameList + switching only on the active window.
-
-## Installer panel (`setup/`)
-
-`rzswitch-setup.exe` — borderless WinForms installer panel, Razer-styled
-(black + neon green, custom title bar, no status line — state is conveyed
-by button availability plus a hint line). Runs elevated (manifest requests
-administrator).
-
-- Buttons: disable/enable GameManager, **Install & Start our service**
-  (single button: installs if missing, then starts), stop/remove it.
-- Interlock: start is performed only while GameManager is disabled.
-  If GameManager is active, the panel installs (if needed) and tells you
-  to disable GameManager first.
-- sc.exe output log at the bottom, live refresh.
-
-Build (solution `rzswitch.slnx` holds both projects).
-Clean + publish everything into one folder so the installer finds
-the service binary next to itself:
-
-```bat
-dotnet publish setup/rzswitch-setup.csproj -c Release -o publish/
-dotnet publish rzswitch.csproj -c Release -o publish/
-```
-
-Note: `publish/rzswitch.exe` is locked while the `rzswitch` service
-is running — `sc stop rzswitch` (admin) before re-publishing it.
-
-## Control panel (web)
-
-On startup (console or service) a Razer-styled web panel is served:
-
-- status of GameManager (Razer) and rzswitch: Running/Stopped, start type;
-- buttons: disable/enable GameManager, install/remove/start/stop the
-  rzswitch service;
-- interlock: the enable-ours button is unavailable while GameManager is
-  active (port/registry conflict) — enforced both in the UI and server-side;
-- live log tail with auto-refresh every 2 seconds.
-
-Actions shell out to `sc.exe` and write to HKLM, so run elevated —
-otherwise buttons report access errors. A banner in the panel warns when
-running non-elevated. No external assets: single self-contained page,
-works offline.
+- Windows 10/11 (64-bit)
+- Razer Synapse installed
+- .NET 10 runtime (the app will tell you if it's missing)
+- Administrator rights for the 2-minute setup
 
 ## Install
 
-```bat
-:: 1. Stop and disable the original (admin) — or use the installer panel
-sc stop "Razer Game Manager Service 3"
-sc config "Razer Game Manager Service 3" start= disabled
+1. Download `rzswitch-vX.Y.Z-win-x64.zip` from the latest release and unpack it anywhere.
+2. Run `rzswitch-setup.exe` as administrator.
+3. Press **Install to system** — files go to your AppData, rzswitch appears in Windows Programs, the service starts.
 
-:: 2. Start Synapse (it applies the profiles)
+Done. Switch between games and watch Synapse follow.
 
-:: 3a. Installer panel (admin): publish\rzswitch-setup.exe
-::     -> "Install & Start our service"
-:: 3b. Or web panel: run publish\rzswitch.exe elevated, open the URL it logs
-```
+## The setup window
 
-Rollback: the panel's "Enable GMS" button (`start= demand` + start), or
-`sc config` back manually; remove our service with the panel button.
+- **Game Manager** — turns Razer's own detector off and on. Ours can't run alongside it, so keep Razer's off.
+- **Rzswitch, runs from current folder** — quick mode: the service works right from the folder you unpacked. Good for trying things out.
+- **System, copies files to AppData** — the real install: files live in AppData, with an entry in Programs. Survives folder moves and cleanups.
 
-## Build
+## Uninstall
 
-```
-dotnet build rzswitch.slnx -c Release
-```
+Open Windows Settings → Apps → find **rzswitch** → Uninstall. The setup opens in removal mode: press **Remove from system**, confirm **"Uninstall complete"**, done.
 
-.NET 10 SDK. `rzswitch.csproj` = service, `setup/` = installer panel
-(`rzswitch-setup.exe`). Windows-only (window detection, registry, services).
+## If something doesn't work
 
-## Status
+- **Buttons do nothing / access errors** — run the setup as administrator.
+- **Profiles don't switch** — make sure Razer's Game Manager is off and our service is running (the setup window says so).
+- **Razer turned its service back on** (e.g. after an update) — rzswitch notices within 30 seconds, turns it back off, and leaves a note in its log.
 
-Working prototype: hub comes up, games load from UserGameList, START/STOP
-events go out to subscribers. Verified against a live Synapse — see Issues.
+## For developers
+
+Build: `dotnet build rzswitch.slnx -c Release`. Release rules: see `VERSIONING.md`. Changes: see `CHANGELOG.md`.
 
 ## License
 
