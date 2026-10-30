@@ -28,7 +28,9 @@ Pre-release (if needed): `vX.Y.Z-rc.N`.
    ```
    Note: `rzswitch.exe` in `publish/` is locked while the service runs —
    `sc stop rzswitch` (admin) before re-publishing over it.
-3. Attach to the GitHub release: `rzswitch.exe`, `rzswitch-setup.exe`.
+3. Attach to the GitHub release a single archive
+   `rzswitch-vX.Y.Z-win-x64.zip` with both exes
+   (`rzswitch.exe`, `rzswitch-setup.exe`).
    `web.config` / `*.staticwebassets.*` / `publish/` subfolder / `*.pdb`
    from the output are Web SDK leftovers — do not attach.
 4. Tag and publish:
