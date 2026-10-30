@@ -176,6 +176,23 @@ sealed class SetupForm : Form
             AutoSize = true,
         };
         header.Controls.Add(sub);
+        var coffee = new Label
+        {
+            Text = "Buy me a coffee",
+            ForeColor = Color.FromArgb(150, 150, 150),
+            Font = new Font("Segoe UI", 9, FontStyle.Underline),
+            Location = new Point(348, 12),
+            AutoSize = true,
+            Cursor = Cursors.Hand,
+        };
+        coffee.MouseEnter += (_, _) => coffee.ForeColor = Color.White;
+        coffee.MouseLeave += (_, _) => coffee.ForeColor = Color.FromArgb(150, 150, 150);
+        coffee.Click += (_, _) =>
+        {
+            try { Process.Start(new ProcessStartInfo("https://destream.net/live/CucumberKing/donate") { UseShellExecute = true }); }
+            catch (Exception ex) { MessageBox.Show(ex.Message, "rzswitch", MessageBoxButtons.OK, MessageBoxIcon.Warning); }
+        };
+        header.Controls.Add(coffee);
         var close = new Label
         {
             Text = "X",
