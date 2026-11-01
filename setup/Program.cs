@@ -55,7 +55,7 @@ static class Svc
         return "?";
     }
 
-    public static (string output, int code) Run(string exe, string args)
+    public static (string output, int code) Run(string exe, string args, int timeoutMs = 20000)
     {
         try
         {
@@ -68,7 +68,7 @@ static class Svc
             };
             using var p = Process.Start(psi)!;
             var o = p.StandardOutput.ReadToEnd() + p.StandardError.ReadToEnd();
-            p.WaitForExit(20000);
+            p.WaitForExit(timeoutMs);
             return (o.Trim(), p.ExitCode);
         }
         catch (Exception ex) { return (ex.Message, -1); }
@@ -115,12 +115,12 @@ static class SysInstall
         string was = DescribePrevious(prevBin, prev);
         if (prev.Exists)
         {
-            Svc.Run("sc", $"stop {Svc.Own}");
-            WaitForStop(15000);
+            Svc.Run("sc", $"stop {Svc.Own}", 60000);
+            WaitForStop(60000);
             if (!IsSystemBinary(prevBin))
             {
-                var (oDel, cDel) = Svc.Run("sc", $"delete {Svc.Own}");
-                if (!WaitForDelete(15000))
+                var (oDel, cDel) = Svc.Run("sc", $"delete {Svc.Own}", 60000);
+                if (!WaitForDelete(60000))
                     return $"{was} | cannot unregister local service: delete[{cDel}] {First(oDel)}";
                 was += " | local service unregistered";
             }
@@ -129,23 +129,25 @@ static class SysInstall
         CopyIfDifferent(srcSvc, SvcExeDst);
         CopyIfDifferent(srcSetup, SetupExeDst);
         // re-point service to the AppData copy
-        Svc.Run("sc", $"delete {Svc.Own}");
-        var (o1, c1) = Svc.Run("sc", $"create {Svc.Own} binPath= \"{SvcExeDst}\" start= auto");
-        var (o2, c2) = Svc.Run("sc", $"description {Svc.Own} \"Razer GameManager replacement: foreground detector + SignalR hub\"");
+        Svc.Run("sc", $"delete {Svc.Own}", 60000);
+        var (o1, c1) = Svc.Run("sc", $"create {Svc.Own} binPath= \"{SvcExeDst}\" start= auto", 60000);
+        var (o2, c2) = Svc.Run("sc", $"description {Svc.Own} \"Razer GameManager replacement: foreground detector + SignalR hub\"", 60000);
         RegisterUninstall();
         RegisterTrackerAutostart(SvcExeDst);
         StartTracker(SvcExeDst);
         var gms = Svc.Query(Svc.Gms);
         if (gms.Exists && (gms.Status == "Running" || gms.StartType != "disabled"))
             return $"{was} | copied to {InstallDir} | create[{c1}] {First(o1)} | desc[{c2}] {First(o2)} | start blocked: disable GameManager first";
-        var (o3, c3) = Svc.Run("sc", $"start {Svc.Own}");
+        var (o3, c3) = Svc.Run("sc", $"start {Svc.Own}", 60000);
         return $"{was} | copied to {InstallDir} | create[{c1}] {First(o1)} | desc[{c2}] {First(o2)} | start[{c3}] {First(o3)}";
     }
 
     public static string Remove()
     {
-        var (o1, c1) = Svc.Run("sc", $"stop {Svc.Own}");
-        var (o2, c2) = Svc.Run("sc", $"delete {Svc.Own}");
+        var (o1, c1) = Svc.Run("sc", $"stop {Svc.Own}", 60000);
+        WaitForStop(60000);
+        var (o2, c2) = Svc.Run("sc", $"delete {Svc.Own}", 60000);
+        WaitForDelete(60000);
         UnregisterTrackerAutostart();
         UnregisterUninstall();
         var files = TryDeleteFiles();
@@ -566,14 +568,14 @@ sealed class SetupForm : Form
 
         _bGmsDisable.Click += (_, _) => Do("GameManager disabled", () =>
         {
-            var (o1, c1) = Svc.Run("sc", $"stop \"{Svc.Gms}\"");
-            var (o2, c2) = Svc.Run("sc", $"config \"{Svc.Gms}\" start= disabled");
+            var (o1, c1) = Svc.Run("sc", $"stop \"{Svc.Gms}\"", 60000);
+            var (o2, c2) = Svc.Run("sc", $"config \"{Svc.Gms}\" start= disabled", 60000);
             return $"stop[{c1}] {FirstLine(o1)} | config[{c2}] {FirstLine(o2)}";
         });
         _bGmsEnable.Click += (_, _) => Do("GameManager enabled", () =>
         {
-            var (o1, c1) = Svc.Run("sc", $"config \"{Svc.Gms}\" start= demand");
-            var (o2, c2) = Svc.Run("sc", $"start \"{Svc.Gms}\"");
+            var (o1, c1) = Svc.Run("sc", $"config \"{Svc.Gms}\" start= demand", 60000);
+            var (o2, c2) = Svc.Run("sc", $"start \"{Svc.Gms}\"", 60000);
             return $"config[{c1}] {FirstLine(o1)} | start[{c2}] {FirstLine(o2)}";
         });
         _bOwnSetup.Click += (_, _) =>
@@ -584,8 +586,8 @@ sealed class SetupForm : Form
             {
                 Do("service installed", () =>
                 {
-                    var (o1, c1) = Svc.Run("sc", $"create {Svc.Own} binPath= \"{exe}\" start= auto");
-                    var (o2, c2) = Svc.Run("sc", $"description {Svc.Own} \"Razer GameManager replacement: foreground detector + SignalR hub\"");
+                    var (o1, c1) = Svc.Run("sc", $"create {Svc.Own} binPath= \"{exe}\" start= auto", 60000);
+                    var (o2, c2) = Svc.Run("sc", $"description {Svc.Own} \"Razer GameManager replacement: foreground detector + SignalR hub\"", 60000);
                     return $"create[{c1}] {FirstLine(o1)} | desc[{c2}] {FirstLine(o2)}";
                 });
             }
@@ -600,14 +602,14 @@ sealed class SetupForm : Form
             }
             Do("our service started", () =>
             {
-                var (o, c) = Svc.Run("sc", $"start {Svc.Own}");
+                var (o, c) = Svc.Run("sc", $"start {Svc.Own}", 60000);
                 return $"start[{c}] {FirstLine(o)}";
             });
         };
         _bOwnRemove.Click += (_, _) => Do("service removed", () =>
         {
-            var (o1, c1) = Svc.Run("sc", $"stop {Svc.Own}");
-            var (o2, c2) = Svc.Run("sc", $"delete {Svc.Own}");
+            var (o1, c1) = Svc.Run("sc", $"stop {Svc.Own}", 60000);
+            var (o2, c2) = Svc.Run("sc", $"delete {Svc.Own}", 60000);
             SysInstall.UnregisterTrackerAutostart();
             return $"stop[{c1}] {FirstLine(o1)} | delete[{c2}] {FirstLine(o2)}";
         });

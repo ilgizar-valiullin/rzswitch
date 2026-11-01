@@ -645,6 +645,9 @@ public static class Program
         var hub = app.Services.GetRequiredService<IHubContext<RzHub, IRzPush>>();
         state.Games = GameList.Load(log);
 
+        // Track FileSystemWatchers for disposal on shutdown
+        var watchers = new List<FileSystemWatcher>();
+
         foreach (var dir in Directory.GetDirectories(@"C:\ProgramData\Razer\GameManager3\Data", "rzr_*"))
         {
             var w = new FileSystemWatcher(dir, "UserGameList_*.xml")
@@ -657,6 +660,7 @@ public static class Program
                 log.LogInformation("game list reloaded: {n}", state.Games.Count);
             };
             w.EnableRaisingEvents = true;
+            watchers.Add(w);
         }
 
         MapUi(app, state, log, hub);
@@ -706,9 +710,18 @@ public static class Program
         WriteServerPort(port, log);
         log.LogInformation("hub on 127.0.0.1:{p}, games: {n}", port, state.Games.Count);
 
+        // Register shutdown callback to dispose watchers
+        var lifetime = app.Services.GetRequiredService<IHostApplicationLifetime>();
+        lifetime.ApplicationStopping.Register(() =>
+        {
+            foreach (var w in watchers)
+            {
+                try { w.EnableRaisingEvents = false; w.Dispose(); } catch { }
+            }
+            watchers.Clear();
+        });
+
         _ = GuardLoop(app, state, log);
-        // WatchLoop disabled: service runs in session 0 and cannot see user foreground.
-        // Foreground tracking is done by rzswitch.exe --foreground-tracker (user-session autostart).
         await app.WaitForShutdownAsync();
     }
 
