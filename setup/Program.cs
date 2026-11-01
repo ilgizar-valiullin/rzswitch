@@ -3,12 +3,15 @@
 // toggles Razer GameManagerService3. Own-service start is locked while
 // GameManager is active (port/registry conflict).
 using System;
+using System.Collections.Generic;
 using System.Diagnostics;
 using System.Drawing;
 using System.IO;
 using System.Linq;
+using System.Runtime.InteropServices;
 using System.ServiceProcess;
 using System.Threading;
+using System.Threading.Tasks;
 using System.Windows.Forms;
 using Microsoft.Win32;
 
@@ -81,6 +84,7 @@ static class Svc
 static class SysInstall
 {
     public const string UninstallId = "rzswitch";
+    private const string TrackerRunValue = "rzswitch-tracker";
     public const string UninstallKeyPath = @"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\rzswitch";
 
     public static string InstallDir =>
@@ -88,6 +92,7 @@ static class SysInstall
 
     public static string SvcExeDst => Path.Combine(InstallDir, "rzswitch.exe");
     public static string SetupExeDst => Path.Combine(InstallDir, "rzswitch-setup.exe");
+    public static string TrackerExeDst => Path.Combine(InstallDir, "rztracker.exe");
 
     public static string SetupExeSrc =>
         Environment.ProcessPath ?? Path.Combine(AppContext.BaseDirectory, "rzswitch-setup.exe");
@@ -102,56 +107,105 @@ static class SysInstall
 
     public static string Install()
     {
+        Console.WriteLine("[DEBUG] Install: checking source files...");
         var srcSvc = Svc.ServiceExe();
         var srcSetup = SetupExeSrc;
+        var srcTracker = Path.Combine(Path.GetDirectoryName(srcSvc)!, "rztracker.exe");
         if (!File.Exists(srcSvc))
             return $"missing {srcSvc} - keep setup next to rzswitch.exe";
         if (!File.Exists(srcSetup))
             return $"missing {srcSetup}";
+        if (!File.Exists(srcTracker))
+            return $"missing {srcTracker} - publish first";
+        Console.WriteLine("[DEBUG] Install: source files OK");
         // first: stop the current service; if it is registered from the
         // current folder, unregister it so the system-level service takes over
+        Console.WriteLine("[DEBUG] Install: querying previous service...");
         var prevBin = GetBinaryPath();
         var prev = Svc.Query(Svc.Own);
+        Console.WriteLine($"[DEBUG] Install: prev.Exists={prev.Exists}, prev.Status={prev.Status}");
         string was = DescribePrevious(prevBin, prev);
         if (prev.Exists)
         {
+            Console.WriteLine("[DEBUG] Install: stopping previous service...");
             Svc.Run("sc", $"stop {Svc.Own}", 60000);
             WaitForStop(60000);
+            Console.WriteLine("[DEBUG] Install: stopped previous service");
             if (!IsSystemBinary(prevBin))
             {
+                Console.WriteLine("[DEBUG] Install: deleting previous service...");
                 var (oDel, cDel) = Svc.Run("sc", $"delete {Svc.Own}", 60000);
                 if (!WaitForDelete(60000))
                     return $"{was} | cannot unregister local service: delete[{cDel}] {First(oDel)}";
                 was += " | local service unregistered";
             }
         }
+        Console.WriteLine("[DEBUG] Install: creating directory...");
         Directory.CreateDirectory(InstallDir);
+        KillTracker();
+        Console.WriteLine("[DEBUG] Install: copying files...");
         CopyIfDifferent(srcSvc, SvcExeDst);
         CopyIfDifferent(srcSetup, SetupExeDst);
+        CopyIfDifferent(srcTracker, TrackerExeDst);
+        Console.WriteLine("[DEBUG] Install: re-pointing service...");
         // re-point service to the AppData copy
         Svc.Run("sc", $"delete {Svc.Own}", 60000);
+        Console.WriteLine("[DEBUG] Install: creating service...");
         var (o1, c1) = Svc.Run("sc", $"create {Svc.Own} binPath= \"{SvcExeDst}\" start= auto", 60000);
+        Console.WriteLine($"[DEBUG] Install: create result c1={c1}, o1={o1}");
         var (o2, c2) = Svc.Run("sc", $"description {Svc.Own} \"Razer GameManager replacement: foreground detector + SignalR hub\"", 60000);
+        Console.WriteLine($"[DEBUG] Install: description result c2={c2}, o2={o2}");
         RegisterUninstall();
-        RegisterTrackerAutostart(SvcExeDst);
-        StartTracker(SvcExeDst);
+        RegisterTrackerAutostart(TrackerExeDst);
+        StartTracker(TrackerExeDst);
         var gms = Svc.Query(Svc.Gms);
         if (gms.Exists && (gms.Status == "Running" || gms.StartType != "disabled"))
             return $"{was} | copied to {InstallDir} | create[{c1}] {First(o1)} | desc[{c2}] {First(o2)} | start blocked: disable GameManager first";
+        Console.WriteLine("[DEBUG] Install: starting service...");
         var (o3, c3) = Svc.Run("sc", $"start {Svc.Own}", 60000);
+        Console.WriteLine($"[DEBUG] Install: start result c3={c3}, o3={o3}");
         return $"{was} | copied to {InstallDir} | create[{c1}] {First(o1)} | desc[{c2}] {First(o2)} | start[{c3}] {First(o3)}";
     }
 
     public static string Remove()
     {
+        Console.WriteLine("[DEBUG] Remove: stopping service...");
         var (o1, c1) = Svc.Run("sc", $"stop {Svc.Own}", 60000);
+        Console.WriteLine($"[DEBUG] Remove: stop result c1={c1}, o1={o1}");
         WaitForStop(60000);
+        Console.WriteLine("[DEBUG] Remove: service stopped, waiting for process exit...");
+        WaitForProcessExit(Svc.Own, 10000);
+        Console.WriteLine("[DEBUG] Remove: process exited, deleting service...");
         var (o2, c2) = Svc.Run("sc", $"delete {Svc.Own}", 60000);
+        Console.WriteLine($"[DEBUG] Remove: delete result c2={c2}, o2={o2}");
         WaitForDelete(60000);
+        Console.WriteLine("[DEBUG] Remove: service deleted, unregistering tracker...");
         UnregisterTrackerAutostart();
+        KillTracker();
         UnregisterUninstall();
+        Console.WriteLine("[DEBUG] Remove: deleting files...");
         var files = TryDeleteFiles();
+        Console.WriteLine($"[DEBUG] Remove: done, files={files}");
         return $"stop[{c1}] {First(o1)} | delete[{c2}] {First(o2)} | {files}";
+    }
+
+    private static void WaitForProcessExit(string serviceName, int timeoutMs)
+    {
+        Console.WriteLine($"[DEBUG] WaitForProcessExit: waiting for {serviceName}...");
+        try
+        {
+            var sw = Stopwatch.StartNew();
+            while (sw.ElapsedMilliseconds < timeoutMs)
+            {
+                var processes = Process.GetProcessesByName(serviceName);
+                Console.WriteLine($"[DEBUG] WaitForProcessExit: found {processes.Length} processes");
+                if (processes.Length == 0) { Console.WriteLine("[DEBUG] WaitForProcessExit: no processes found, exiting"); return; }
+                foreach (var p in processes) { Console.WriteLine($"[DEBUG] WaitForProcessExit: process {p.Id} still running"); p.Dispose(); }
+                Thread.Sleep(200);
+            }
+            Console.WriteLine("[DEBUG] WaitForProcessExit: timeout reached");
+        }
+        catch (Exception ex) { Console.WriteLine("[DEBUG] WaitForProcessExit error: " + ex.Message); }
     }
 
     public static void ScheduleSelfCleanup()
@@ -299,7 +353,7 @@ static class SysInstall
         {
             using var k = Registry.CurrentUser.OpenSubKey(
                 @"Software\Microsoft\Windows\CurrentVersion\Run", writable: true);
-            k?.SetValue("rzswitch-tracker", $"\"{exePath}\" --foreground-tracker", RegistryValueKind.String);
+            k?.SetValue(TrackerRunValue, $"\"{exePath}\" --foreground-tracker", RegistryValueKind.String);
         }
         catch { }
     }
@@ -310,7 +364,43 @@ static class SysInstall
         {
             using var k = Registry.CurrentUser.OpenSubKey(
                 @"Software\Microsoft\Windows\CurrentVersion\Run", writable: true);
-            k?.DeleteValue("rzswitch-tracker", throwOnMissingValue: false);
+            k?.DeleteValue(TrackerRunValue, throwOnMissingValue: false);
+        }
+        catch { }
+    }
+
+    internal static void KillTracker()
+    {
+        // new-format tracker has a unique name: kill anywhere
+        KillByName("rztracker", null);
+        // old-format tracker is rzswitch.exe --foreground-tracker: kill only
+        // our installed copy, never a dev instance from another folder
+        KillByName("rzswitch", InstallDir);
+    }
+
+    private static void KillByName(string name, string? onlyUnderDir)
+    {
+        try
+        {
+            foreach (var p in Process.GetProcessesByName(name))
+            {
+                try
+                {
+                    if (p.HasExited) continue;
+                    if (onlyUnderDir != null)
+                    {
+                        string? path = null;
+                        try { path = p.MainModule?.FileName; } catch { continue; }
+                        if (string.IsNullOrEmpty(path) ||
+                            !path.StartsWith(onlyUnderDir, StringComparison.OrdinalIgnoreCase))
+                            continue;
+                    }
+                    p.Kill(true);
+                    p.WaitForExit(3000);
+                }
+                catch { }
+                finally { p.Dispose(); }
+            }
         }
         catch { }
     }
@@ -339,22 +429,62 @@ static class SysInstall
             var self = Environment.ProcessPath ?? "";
             bool selfInside = !string.IsNullOrEmpty(self) &&
                 self.StartsWith(InstallDir, StringComparison.OrdinalIgnoreCase);
+            var failed = new List<string>();
             foreach (var f in Directory.GetFiles(InstallDir))
             {
                 try
                 {
                     if (selfInside && string.Equals(Path.GetFullPath(f), Path.GetFullPath(self),
                         StringComparison.OrdinalIgnoreCase))
+                    {
+                        Console.WriteLine($"[DEBUG] Skipping self: {f}");
                         continue;
+                    }
+                    // Wait for file lock to be released
+                    Console.WriteLine($"[DEBUG] Waiting for unlock: {f}");
+                    WaitForFileUnlock(f, 5000);
+                    Console.WriteLine($"[DEBUG] Deleting: {f}");
                     File.Delete(f);
+                    Console.WriteLine($"[DEBUG] Deleted: {f}");
                 }
-                catch { }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"[DEBUG] Delete failed for {f}: {ex.Message}");
+                    failed.Add($"{Path.GetFileName(f)}: {ex.Message}");
+                }
             }
-            if (selfInside) { ScheduleSelfCleanup(); return $"files removed, folder cleanup scheduled: {InstallDir}"; }
+            if (selfInside)
+            {
+                ScheduleSelfCleanup();
+                return failed.Count == 0
+                    ? $"files removed, folder cleanup scheduled: {InstallDir}"
+                    : $"files partially removed, locked: {string.Join(", ", failed)} | folder cleanup scheduled: {InstallDir}";
+            }
             try { Directory.Delete(InstallDir, recursive: true); } catch { }
-            return $"removed {InstallDir}";
+            if (!Directory.Exists(InstallDir)) return $"removed {InstallDir}";
+            var rest = string.Join(", ", Directory.GetFiles(InstallDir).Select(Path.GetFileName));
+            return failed.Count == 0
+                ? $"folder not empty, left: {rest}"
+                : $"locked, could not delete: {string.Join(", ", failed)} | left: {rest}";
         }
         catch (Exception ex) { return "cleanup: " + ex.Message; }
+    }
+
+    private static void WaitForFileUnlock(string filePath, int timeoutMs)
+    {
+        var sw = Stopwatch.StartNew();
+        while (sw.ElapsedMilliseconds < timeoutMs)
+        {
+            try
+            {
+                using (File.Open(filePath, FileMode.Open, FileAccess.ReadWrite, FileShare.None))
+                {
+                    return; // file is not locked
+                }
+            }
+            catch (IOException) { Thread.Sleep(100); }
+            catch { return; }
+        }
     }
 
     private static string First(string s) =>
@@ -566,33 +696,38 @@ sealed class SetupForm : Form
         }
         int y = 318;
 
-        _bGmsDisable.Click += (_, _) => Do("GameManager disabled", () =>
+        _bGmsDisable.Click += async (_, _) => await Do("GameManager disabled", () =>
         {
             var (o1, c1) = Svc.Run("sc", $"stop \"{Svc.Gms}\"", 60000);
             var (o2, c2) = Svc.Run("sc", $"config \"{Svc.Gms}\" start= disabled", 60000);
             return $"stop[{c1}] {FirstLine(o1)} | config[{c2}] {FirstLine(o2)}";
         });
-        _bGmsEnable.Click += (_, _) => Do("GameManager enabled", () =>
+        _bGmsEnable.Click += async (_, _) => await Do("GameManager enabled", () =>
         {
             var (o1, c1) = Svc.Run("sc", $"config \"{Svc.Gms}\" start= demand", 60000);
             var (o2, c2) = Svc.Run("sc", $"start \"{Svc.Gms}\"", 60000);
             return $"config[{c1}] {FirstLine(o1)} | start[{c2}] {FirstLine(o2)}";
         });
-        _bOwnSetup.Click += (_, _) =>
+        _bOwnSetup.Click += async (_, _) =>
         {
             var exe = Svc.ServiceExe();
             if (!File.Exists(exe)) { Log($"missing {exe} - keep setup next to rzswitch.exe"); RefreshStatus(); return; }
+            var tracker = Path.Combine(Path.GetDirectoryName(exe)!, "rztracker.exe");
             if (!Svc.Query(Svc.Own).Exists)
             {
-                Do("service installed", () =>
+                await Do("service installed", () =>
                 {
                     var (o1, c1) = Svc.Run("sc", $"create {Svc.Own} binPath= \"{exe}\" start= auto", 60000);
                     var (o2, c2) = Svc.Run("sc", $"description {Svc.Own} \"Razer GameManager replacement: foreground detector + SignalR hub\"", 60000);
                     return $"create[{c1}] {FirstLine(o1)} | desc[{c2}] {FirstLine(o2)}";
                 });
             }
-            SysInstall.RegisterTrackerAutostart(exe);
-            SysInstall.StartTracker(exe);
+            if (File.Exists(tracker))
+            {
+                SysInstall.RegisterTrackerAutostart(tracker);
+                SysInstall.StartTracker(tracker);
+            }
+            else Log($"tracker missing: {tracker} - autostart skipped, publish first");
             var gms = Svc.Query(Svc.Gms);
             if (gms.Exists && (gms.Status == "Running" || gms.StartType != "disabled"))
             {
@@ -600,23 +735,28 @@ sealed class SetupForm : Form
                 RefreshStatus();
                 return;
             }
-            Do("our service started", () =>
+            await Do("our service started", () =>
             {
                 var (o, c) = Svc.Run("sc", $"start {Svc.Own}", 60000);
                 return $"start[{c}] {FirstLine(o)}";
             });
         };
-        _bOwnRemove.Click += (_, _) => Do("service removed", () =>
+        _bOwnRemove.Click += async (_, _) => await Do("service removed", () =>
         {
             var (o1, c1) = Svc.Run("sc", $"stop {Svc.Own}", 60000);
             var (o2, c2) = Svc.Run("sc", $"delete {Svc.Own}", 60000);
             SysInstall.UnregisterTrackerAutostart();
             return $"stop[{c1}] {FirstLine(o1)} | delete[{c2}] {FirstLine(o2)}";
         });
-        _bSysInstall.Click += (_, _) => Do("installed to system", SysInstall.Install);
-        _bSysRemove.Click += (_, _) =>
+        _bSysInstall.Click += async (_, _) =>
         {
-            Do("removed from system", SysInstall.Remove);
+            Log("Installing to system...");
+            await Do("installed to system", SysInstall.Install);
+        };
+        _bSysRemove.Click += async (_, _) =>
+        {
+            Log("Removing from system...");
+            await Do("removed from system", SysInstall.Remove);
             if (_uninstallMode)
             {
                 MessageBox.Show("Удаление завершено", "rzswitch",
@@ -682,13 +822,32 @@ sealed class SetupForm : Form
         _log.ScrollToCaret();
     }
 
-    private void Do(string label, Func<string> act)
+    private async Task Do(string label, Func<string> act)
     {
-        string outp;
-        try { outp = act(); }
-        catch (Exception ex) { outp = "ERR: " + ex.Message; }
-        Log(label + ": " + outp.Replace("\n", " | "));
-        RefreshStatus();
+        SetBusy(true);
+        try
+        {
+            string outp;
+            try { outp = await Task.Run(act); }
+            catch (Exception ex) { outp = "ERR: " + ex.Message; }
+            if (!IsDisposed) Log(label + ": " + outp.Replace("\n", " | "));
+        }
+        finally
+        {
+            if (!IsDisposed)
+            {
+                SetBusy(false);
+                RefreshStatus();
+            }
+        }
+    }
+
+    private void SetBusy(bool busy)
+    {
+        _timer.Stop();
+        foreach (var b in new[] { _bGmsDisable, _bGmsEnable, _bOwnSetup, _bOwnRemove, _bSysInstall, _bSysRemove })
+            b.Enabled = !busy;
+        if (!busy && !_uninstallMode) _timer.Start();
     }
 
     private void RefreshStatus()
@@ -724,6 +883,9 @@ sealed class SetupForm : Form
 
 static class Entry
 {
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool AllocConsole();
+
     [STAThread]
     static void Main(string[] args)
     {
@@ -732,6 +894,51 @@ static class Entry
             || a.Equals("-uninstall", StringComparison.OrdinalIgnoreCase)
             || a.Equals("/uninstall", StringComparison.OrdinalIgnoreCase)
             || a.Equals("uninstall", StringComparison.OrdinalIgnoreCase));
+        bool install = args.Any(a =>
+            a.Equals("--install", StringComparison.OrdinalIgnoreCase)
+            || a.Equals("-install", StringComparison.OrdinalIgnoreCase)
+            || a.Equals("/install", StringComparison.OrdinalIgnoreCase)
+            || a.Equals("install", StringComparison.OrdinalIgnoreCase));
+
+        // Console only for CLI modes; the GUI panel must not pop a CMD window.
+        if (install || uninstall)
+            AllocConsole();
+
+        if (install)
+        {
+            try
+            {
+                Console.WriteLine("[DEBUG] Starting install...");
+                Console.WriteLine("[DEBUG] Checking source files...");
+                var srcSvc = Svc.ServiceExe();
+                var srcSetup = SysInstall.SetupExeSrc;
+                Console.WriteLine($"[DEBUG] srcSvc: {srcSvc} exists={File.Exists(srcSvc)}");
+                Console.WriteLine($"[DEBUG] srcSetup: {srcSetup} exists={File.Exists(srcSetup)}");
+                var result = SysInstall.Install();
+                Console.WriteLine("[DEBUG] Install result: " + result);
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine("[DEBUG] Install exception: " + ex.ToString());
+            }
+            return;
+        }
+
+        if (uninstall)
+        {
+            try
+            {
+                Console.WriteLine("[DEBUG] Starting uninstall...");
+                var result = SysInstall.Remove();
+                Console.WriteLine("[DEBUG] Uninstall result: " + result);
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine("[DEBUG] Uninstall exception: " + ex.ToString());
+            }
+            return;
+        }
+
         ApplicationConfiguration.Initialize();
         Application.Run(new SetupForm(uninstall));
     }

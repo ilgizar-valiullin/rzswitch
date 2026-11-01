@@ -426,70 +426,6 @@ internal static class Svc
         Path.Combine(AppContext.BaseDirectory, "rzswitch.exe");
 }
 
-// ================= GMS guard: fastest status check, no enumeration, no child processes =================
-internal static class GmsGuard
-{
-    private const uint SC_MANAGER_CONNECT = 0x0001;
-    private const uint SERVICE_QUERY_STATUS = 0x0004;
-    private const int SC_STATUS_PROCESS_INFO = 0;
-
-    private const int SERVICE_STOPPED = 0x1;
-    private const int SERVICE_START_PENDING = 0x2;
-    private const int SERVICE_STOP_PENDING = 0x3;
-    private const int SERVICE_RUNNING = 0x4;
-
-    [StructLayout(LayoutKind.Sequential)]
-    private struct SERVICE_STATUS_PROCESS
-    {
-        public int dwServiceType;
-        public int dwCurrentState;
-        public int dwControlsAccepted;
-        public int dwWin32ExitCode;
-        public int dwServiceSpecificExitCode;
-        public int dwCheckPoint;
-        public int dwWaitHint;
-        public int dwProcessId;
-        public int dwServiceFlags;
-    }
-
-    [DllImport("advapi32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
-    private static extern IntPtr OpenSCManager(string? machine, string? db, uint access);
-    [DllImport("advapi32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
-    private static extern IntPtr OpenService(IntPtr hSC, string name, uint access);
-    [DllImport("advapi32.dll", SetLastError = true)]
-    private static extern bool QueryServiceStatusEx(IntPtr h, int level, ref SERVICE_STATUS_PROCESS buf, int size, out int needed);
-    [DllImport("advapi32.dll", SetLastError = true)]
-    private static extern bool CloseServiceHandle(IntPtr h);
-
-    // null = no such service (or SCM unavailable); otherwise SCM state code
-    public static int? State(string name)
-    {
-        IntPtr scm = OpenSCManager(null, null, SC_MANAGER_CONNECT);
-        if (scm == IntPtr.Zero) return null;
-        try
-        {
-            IntPtr svc = OpenService(scm, name, SERVICE_QUERY_STATUS);
-            if (svc == IntPtr.Zero) return null;
-            try
-            {
-                var st = new SERVICE_STATUS_PROCESS();
-                if (!QueryServiceStatusEx(svc, SC_STATUS_PROCESS_INFO, ref st, Marshal.SizeOf<SERVICE_STATUS_PROCESS>(), out _))
-                    return null;
-                return st.dwCurrentState;
-            }
-            finally { CloseServiceHandle(svc); }
-        }
-        finally { CloseServiceHandle(scm); }
-    }
-
-    public static bool IsActive(string name, out int state)
-    {
-        var s = State(name);
-        state = s ?? -1;
-        return s is SERVICE_RUNNING or SERVICE_START_PENDING;
-    }
-}
-
 // ================= UI =================
 internal static class Ui
 {
@@ -668,35 +604,15 @@ public static class Program
         // port: explicit arg wins, then registry (GameManager's ServerPort), then dynamic
         int port = 0;
         if (args.Length > 0 && int.TryParse(args[0], out var ap)) port = ap;
-        if (port == 0)
-        {
-            foreach (var key in new[] { @"Software\Razer\Services\GMS3", @"Software\WOW6432Node\Razer\Services\GMS3" })
-            {
-                try
-                {
-                    using var k = Microsoft.Win32.Registry.LocalMachine.OpenSubKey(key);
-                    var v = k?.GetValue("ServerPort")?.ToString();
-                    if (int.TryParse(v, out var rp) && rp > 0) { port = rp; break; }
-                }
-                catch { }
-            }
-        }
+        if (port == 0 && int.TryParse(ReadGmsValue("ServerPort"), out var rp) && rp > 0) port = rp;
         if (port > 0 && !IsFree(port))
         {
             log.LogWarning("port {p} busy, falling back to dynamic", port);
             port = 0;
         }
 
-        foreach (var key in new[] { @"Software\Razer\Services\GMS3", @"Software\WOW6432Node\Razer\Services\GMS3" })
-        {
-            try
-            {
-                using var k = Microsoft.Win32.Registry.LocalMachine.OpenSubKey(key);
-                var v = k?.GetValue("version")?.ToString();
-                if (!string.IsNullOrWhiteSpace(v)) { state.ServiceVersion = v!; break; }
-            }
-            catch { }
-        }
+        var ver = ReadGmsValue("version");
+        if (ver != null) state.ServiceVersion = ver;
 
         // dynamic loopback port like stock GMS, then publish to registry
         app.Urls.Clear();
@@ -704,21 +620,28 @@ public static class Program
         await app.StartAsync();
         var addr = app.Urls.FirstOrDefault() ?? "";
         port = 0;
-        var m = System.Text.RegularExpressions.Regex.Match(addr, @":(\d+)$");
-        if (m.Success) port = int.Parse(m.Groups[1].Value);
+        try { port = new Uri(addr).Port; } catch { }
         state.BoundPort = port;
         WriteServerPort(port, log);
         log.LogInformation("hub on 127.0.0.1:{p}, games: {n}", port, state.Games.Count);
 
-        // Register shutdown callback to dispose watchers
+        // Register shutdown callback to dispose watchers and stop tracker
         var lifetime = app.Services.GetRequiredService<IHostApplicationLifetime>();
         lifetime.ApplicationStopping.Register(() =>
         {
+            log.LogInformation("ApplicationStopping callback fired");
             foreach (var w in watchers)
             {
                 try { w.EnableRaisingEvents = false; w.Dispose(); } catch { }
             }
             watchers.Clear();
+            log.LogInformation("Calling StopTracker");
+            StopTracker(log);
+            log.LogInformation("StopTracker completed");
+        });
+        lifetime.ApplicationStopped.Register(() =>
+        {
+            log.LogInformation("ApplicationStopped callback fired");
         });
 
         _ = GuardLoop(app, state, log);
@@ -737,9 +660,30 @@ public static class Program
         catch { return false; }
     }
 
+    private static readonly string[] GmsKeys =
+    {
+        @"Software\Razer\Services\GMS3",
+        @"Software\WOW6432Node\Razer\Services\GMS3",
+    };
+
+    private static string? ReadGmsValue(string name)
+    {
+        foreach (var key in GmsKeys)
+        {
+            try
+            {
+                using var k = Registry.LocalMachine.OpenSubKey(key);
+                var v = k?.GetValue(name)?.ToString();
+                if (!string.IsNullOrWhiteSpace(v)) return v;
+            }
+            catch { }
+        }
+        return null;
+    }
+
     private static void WriteServerPort(int port, ILogger log)
     {
-        foreach (var baseKey in new[] { @"Software\Razer\Services\GMS3", @"Software\WOW6432Node\Razer\Services\GMS3" })
+        foreach (var baseKey in GmsKeys)
         {
             try
             {
@@ -820,6 +764,7 @@ public static class Program
             {
                 var (o1, c1) = Svc.Run("sc", $"stop {Svc.Own}");
                 var (o2, c2) = Svc.Run("sc", $"delete {Svc.Own}");
+                UnregisterTrackerAutostart(log);
                 return $"stop[{c1}]\n{o1}\ndelete[{c2}]\n{o2}";
             }), "text/html; charset=utf-8"));
         app.MapPost("/api/own-start", () =>
@@ -837,12 +782,11 @@ public static class Program
             Results.Content(Do("rzswitch остановлен", () =>
             {
                 var (o, c) = Svc.Run("sc", $"stop {Svc.Own}");
-                UnregisterTrackerAutostart(log);
                 return $"stop[{c}]\n{o}";
             }), "text/html; charset=utf-8"));
     }
 
-    // GMS guard: every 30s a sub-millisecond SCM check; if Razer restarted
+    // GMS guard: every 30s check the service status; if Razer restarted
     // GameManager, stop it, pin it to disabled and take ServerPort back.
     private static async Task GuardLoop(WebApplication app, RzState state, ILogger log)
     {
@@ -852,9 +796,10 @@ public static class Program
         {
             try
             {
-                if (GmsGuard.IsActive(Svc.Gms, out var st))
+                var gms = Svc.Query(Svc.Gms);
+                if (gms.Exists && (gms.Status is "Running" or "StartPending"))
                 {
-                    log.LogWarning("GMS guard: GameManager active (state={s}), stopping", st);
+                    log.LogWarning("GMS guard: GameManager active (state={s}), stopping", gms.Status);
                     var (o1, c1) = Svc.Run("sc", $"stop \"{Svc.Gms}\"");
                     var (o2, c2) = Svc.Run("sc", $"config \"{Svc.Gms}\" start= disabled");
                     WriteServerPort(state.BoundPort, log);
@@ -871,10 +816,10 @@ public static class Program
     // shared state mutation lock (/api/foreground, GuardLoop)
     private static readonly object StateLock = new();
 
-    private static async Task HandleForegroundChange(uint pid, string exe, RzState state,
+    private static Task HandleForegroundChange(uint pid, string exe, RzState state,
         IHubContext<RzHub, IRzPush> hub, ILogger log)
     {
-        if (string.IsNullOrEmpty(exe)) return;
+        if (string.IsNullOrEmpty(exe)) return Task.CompletedTask;
         lock (StateLock)
         {
             if (!string.Equals(exe, state.CurrentExe, StringComparison.OrdinalIgnoreCase))
@@ -934,9 +879,10 @@ public static class Program
                 }
             }
         }
+        return Task.CompletedTask;
     }
 
-    // user-session foreground tracker: runs as rzswitch.exe --foreground-tracker
+    // user-session foreground tracker: runs as rztracker.exe --foreground-tracker
     // (autostart via HKCU Run). Calls GetForegroundWindow in the user session and
     // POSTs changes to the service's /api/foreground endpoint.
     private static async Task TrackerLoop(string logPath)
@@ -944,7 +890,14 @@ public static class Program
         using var cts = new CancellationTokenSource();
         Console.CancelKeyPress += (_, e) => { e.Cancel = true; cts.Cancel(); };
 
+        // Release builds stay silent: file logging only under DEBUG,
+        // otherwise rzswitch.log would grow unbounded on user machines (see AGENTS.md).
+#if DEBUG
         var log = new FileLogger(logPath).CreateLogger("tracker");
+#else
+        using var logFactory = LoggerFactory.Create(b => { });
+        var log = logFactory.CreateLogger("tracker");
+#endif
         var http = new HttpClient { Timeout = TimeSpan.FromSeconds(2) };
         int port = 0;
         string? lastExe = null;
@@ -954,20 +907,6 @@ public static class Program
             if (port == 0)
             {
                 port = ReadServerPortFromRegistry();
-                if (port == 0 || port == 14914)
-                {
-                    // try fallback ports
-                    foreach (var p2 in new[] { 1654, 14915, 5000 })
-                    {
-                        try
-                        {
-                            using var hc = new HttpClient { Timeout = TimeSpan.FromSeconds(1) };
-                            var r = await hc.GetAsync($"http://127.0.0.1:{p2}/api/log");
-                            if (r.IsSuccessStatusCode) { port = p2; break; }
-                        }
-                        catch { }
-                    }
-                }
                 if (port == 0)
                 {
                     log.LogInformation("tracker: waiting for service port...");
@@ -1011,22 +950,12 @@ public static class Program
 
     private static int ReadServerPortFromRegistry()
     {
-        foreach (var key in new[] { @"Software\Razer\Services\GMS3", @"Software\WOW6432Node\Razer\Services\GMS3" })
-        {
-            try
-            {
-                using var k = Registry.LocalMachine.OpenSubKey(key);
-                var v = k?.GetValue("ServerPort")?.ToString();
-                if (int.TryParse(v, out var p) && p > 0) return p;
-            }
-            catch { }
-        }
-        return 0;
+        return int.TryParse(ReadGmsValue("ServerPort"), out var p) && p > 0 ? p : 0;
     }
 
     private const string TrackerRunValue = "rzswitch-tracker";
 
-    private static string TrackerExePath() => Path.Combine(AppContext.BaseDirectory, "rsztracker.exe");
+    private static string TrackerExePath() => Path.Combine(AppContext.BaseDirectory, "rztracker.exe");
 
     private static void RegisterTrackerAutostart(ILogger log)
     {
@@ -1034,7 +963,7 @@ public static class Program
         {
             using var k = Registry.CurrentUser.OpenSubKey(
                 @"Software\Microsoft\Windows\CurrentVersion\Run", writable: true);
-            k?.SetValue(TrackerRunValue, $"\"{TrackerExePath()}\"", RegistryValueKind.String);
+            k?.SetValue(TrackerRunValue, $"\"{TrackerExePath()}\" --foreground-tracker", RegistryValueKind.String);
             log.LogInformation("tracker autostart registered: {path}", TrackerExePath());
         }
         catch (Exception ex) { log.LogWarning("tracker autostart register failed: {m}", ex.Message); }
@@ -1052,18 +981,51 @@ public static class Program
         catch (Exception ex) { log.LogWarning("tracker autostart unregister failed: {m}", ex.Message); }
     }
 
+    private static Process? _trackerProcess;
+
     private static void StartTracker(ILogger log)
     {
         try
         {
-            Process.Start(new ProcessStartInfo(TrackerExePath())
+            _trackerProcess = Process.Start(new ProcessStartInfo(TrackerExePath(), "--foreground-tracker")
             {
                 UseShellExecute = false,
                 CreateNoWindow = true,
                 WindowStyle = ProcessWindowStyle.Hidden,
             });
-            log.LogInformation("tracker started (hidden): {path}", TrackerExePath());
+            log.LogInformation("tracker started (hidden): {path} pid={pid}", TrackerExePath(), _trackerProcess?.Id);
         }
         catch (Exception ex) { log.LogWarning("tracker start failed: {m}", ex.Message); }
+    }
+
+    private static void StopTracker(ILogger log)
+    {
+        try
+        {
+            if (_trackerProcess != null && !_trackerProcess.HasExited)
+            {
+                _trackerProcess.Kill(true);
+                _trackerProcess.WaitForExit(5000);
+                log.LogInformation("tracker stopped: pid={pid}", _trackerProcess.Id);
+            }
+            _trackerProcess = null;
+        }
+        catch (Exception ex) { log.LogWarning("tracker stop failed: {m}", ex.Message); }
+
+        // Also kill any rztracker.exe processes (in case tracker was started externally)
+        try
+        {
+            foreach (var p in Process.GetProcessesByName("rztracker"))
+            {
+                if (!p.HasExited)
+                {
+                    p.Kill(true);
+                    p.WaitForExit(3000);
+                    log.LogInformation("killed external rztracker: pid={pid}", p.Id);
+                }
+                p.Dispose();
+            }
+        }
+        catch (Exception ex) { log.LogWarning("external tracker cleanup failed: {m}", ex.Message); }
     }
 }

@@ -26,11 +26,13 @@ Pre-release (if needed): `vX.Y.Z-rc.N`.
    dotnet publish setup/rzswitch-setup.csproj -c Release -o <dir>/
    dotnet publish rzswitch.csproj -c Release -o <dir>/
    ```
+   Note: `rztracker.exe` is auto-copied next to `rzswitch.exe` by the
+   `CopyTrackerExe` target — the folder must contain all three exes.
    Note: `rzswitch.exe` in `publish/` is locked while the service runs —
    `sc stop rzswitch` (admin) before re-publishing over it.
 3. Attach to the GitHub release a single archive
-   `rzswitch-vX.Y.Z-win-x64.zip` with both exes
-   (`rzswitch.exe`, `rzswitch-setup.exe`).
+   `rzswitch-vX.Y.Z-win-x64.zip` with all three exes
+   (`rzswitch.exe`, `rzswitch-setup.exe`, `rztracker.exe`).
    `web.config` / `*.staticwebassets.*` / `publish/` subfolder / `*.pdb`
    from the output are Web SDK leftovers — do not attach.
 4. Tag and publish:

@@ -20,13 +20,18 @@
 
   <ItemGroup>
     <Compile Remove="setup\**" />
-    <Compile Remove="native-tracker-aot\**" />
+    <Compile Remove="rztracker-aot\**" />
     <Content Remove="setup\**" />
-    <Content Remove="native-tracker-aot\**" />
+    <Content Remove="rztracker-aot\**" />
     <None Remove="setup\**" />
-    <None Remove="native-tracker-aot\**" />
+    <None Remove="rztracker-aot\**" />
     <PackageReference Include="Microsoft.Extensions.Hosting.WindowsServices" Version="10.0.14" />
     <PackageReference Include="System.ServiceProcess.ServiceController" Version="10.0.14" />
   </ItemGroup>
+
+  <Target Name="CopyTrackerExe" AfterTargets="Publish" Condition="Exists('$(PublishDir)rzswitch.exe')">
+    <!-- Tracker is the same binary in foreground-tracker mode; deploy expects rztracker.exe next to it -->
+    <Copy SourceFiles="$(PublishDir)rzswitch.exe" DestinationFiles="$(PublishDir)rztracker.exe" SkipUnchangedFiles="true" />
+  </Target>
 
 </Project>

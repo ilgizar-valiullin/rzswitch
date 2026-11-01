@@ -2,6 +2,19 @@
 
 All notable changes to this project are documented here. Versioning follows [Semantic Versioning](https://semver.org/).
 
+## [1.3.0] — 2026-11-01
+
+### Fixed
+
+- Release builds are fully silent: tracker file logging now compiles only under `#if DEBUG` (previously `rzswitch.log` grew unbounded); service logging was already DEBUG-only. Policy documented in `AGENTS.md`.
+- Tracker identity unified to `rztracker.exe --foreground-tracker` everywhere: web `own-install` no longer spawns a rogue second service copy, `own-remove` unregisters autostart, autostart lifecycle is install/remove only (stop no longer strips it).
+- Setup no longer freezes: install/remove run off the UI thread with buttons locked and progress in the log; `Remove from system` kills a running tracker (including the old-format one) before deleting files and reports locked leftovers truthfully instead of a false "removed".
+- Setup panel no longer pops a CMD window (`AllocConsole` only for CLI `--install`/`--uninstall`); `deploy-*.ps1` stage the single-file setup exe plus the tracker.
+
+### Added
+
+- `CopyTrackerExe` publish target: `rztracker.exe` is auto-copied next to `rzswitch.exe` on every publish; release checklist in `VERSIONING.md` now covers all three exes.
+
 ## [1.2.0] — 2026-10-30
 
 ### Added
