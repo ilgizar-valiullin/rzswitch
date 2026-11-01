@@ -10,6 +10,7 @@ using System.ServiceProcess;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using System.Text.Json.Serialization.Metadata;
 using Microsoft.Win32;
 using Microsoft.AspNetCore.Authorization;
 using System.Linq;
@@ -114,6 +115,18 @@ public sealed class ForegroundUpdate
     [JsonPropertyName("pid")] public uint Pid { get; set; }
     [JsonPropertyName("exe")] public string Exe { get; set; } = "";
 }
+
+[JsonSerializable(typeof(ForegroundUpdate))]
+[JsonSerializable(typeof(GameSignatureEventArgs))]
+[JsonSerializable(typeof(GameSignatureWithPidEventArgs))]
+[JsonSerializable(typeof(GameSignatureWithDurationEventArgs))]
+[JsonSerializable(typeof(GameSignature))]
+[JsonSerializable(typeof(GameSignatureWithPid))]
+[JsonSerializable(typeof(GameSignatureWithDuration))]
+[JsonSerializable(typeof(PartialGameSignatureList))]
+[JsonSerializable(typeof(GameSettingsList))]
+[JsonSerializable(typeof(GameScannerErrorCode))]
+public partial class RzJsonContext : JsonSerializerContext { }
 
 // ================= hub =================
 // Mirrors Razer.GameScannerCommon.IGameManagerServiceHubClient.
@@ -589,9 +602,13 @@ public static class Program
         }
 
         var builder = WebApplication.CreateBuilder(args);
+#if DEBUG
         builder.Logging.ClearProviders();
         builder.Logging.AddConsole();
         builder.Logging.AddProvider(new FileLogger(LogPath()));
+#else
+        builder.Logging.ClearProviders();
+#endif
         builder.Services.AddCors(o => o.AddPolicy("CorsPolicy", p => p
             .SetIsOriginAllowed(_ => true)
             .AllowAnyHeader()
@@ -599,13 +616,23 @@ public static class Program
             .AllowCredentials()));
         builder.Services.AddSignalR(o =>
         {
+#if DEBUG
             o.EnableDetailedErrors = true;
+#endif
             o.MaximumReceiveMessageSize = 1024 * 1024;
         }).AddJsonProtocol(o =>
         {
             // Razer's own hub uses JsonStringEnumConverter, so enums (e.g.
             // GameScannerErrorCode) must travel as strings like "GS_SUCCESS".
             o.PayloadSerializerOptions.Converters.Add(new JsonStringEnumConverter());
+            // Use source-generated serialization context for trimming
+            o.PayloadSerializerOptions.TypeInfoResolver = RzJsonContext.Default;
+        });
+        // Configure minimal API JSON serialization for trimming
+        builder.Services.ConfigureHttpJsonOptions(o =>
+        {
+            o.SerializerOptions.Converters.Add(new JsonStringEnumConverter());
+            o.SerializerOptions.TypeInfoResolver = RzJsonContext.Default;
         });
         builder.Services.AddSingleton<RzState>();
         builder.Host.UseWindowsService();
@@ -986,7 +1013,7 @@ public static class Program
 
     private const string TrackerRunValue = "rzswitch-tracker";
 
-    private static string TrackerExePath() => Path.Combine(AppContext.BaseDirectory, "rzswitch.exe");
+    private static string TrackerExePath() => Path.Combine(AppContext.BaseDirectory, "rsztracker.exe");
 
     private static void RegisterTrackerAutostart(ILogger log)
     {
@@ -994,7 +1021,7 @@ public static class Program
         {
             using var k = Registry.CurrentUser.OpenSubKey(
                 @"Software\Microsoft\Windows\CurrentVersion\Run", writable: true);
-            k?.SetValue(TrackerRunValue, $"\"{TrackerExePath()}\" --foreground-tracker", RegistryValueKind.String);
+            k?.SetValue(TrackerRunValue, $"\"{TrackerExePath()}\"", RegistryValueKind.String);
             log.LogInformation("tracker autostart registered: {path}", TrackerExePath());
         }
         catch (Exception ex) { log.LogWarning("tracker autostart register failed: {m}", ex.Message); }
@@ -1016,7 +1043,7 @@ public static class Program
     {
         try
         {
-            Process.Start(new ProcessStartInfo(TrackerExePath(), "--foreground-tracker")
+            Process.Start(new ProcessStartInfo(TrackerExePath())
             {
                 UseShellExecute = false,
                 CreateNoWindow = true,

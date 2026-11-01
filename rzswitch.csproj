@@ -4,6 +4,12 @@
     <TargetFramework>net10.0</TargetFramework>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
+    <!-- Use Workstation GC (concurrent) instead of Server GC to avoid huge virtual memory reservations -->
+    <ServerGarbageCollection>false</ServerGarbageCollection>
+    <Version>3.16.0.0</Version>
+    <AssemblyVersion>3.16.0.0</AssemblyVersion>
+    <FileVersion>3.16.0.0</FileVersion>
+    <InformationalVersion>3.16.0.0</InformationalVersion>
   </PropertyGroup>
 
   <PropertyGroup Condition="'$(Configuration)' == 'Release'">
@@ -14,8 +20,11 @@
 
   <ItemGroup>
     <Compile Remove="setup\**" />
+    <Compile Remove="native-tracker-aot\**" />
     <Content Remove="setup\**" />
+    <Content Remove="native-tracker-aot\**" />
     <None Remove="setup\**" />
+    <None Remove="native-tracker-aot\**" />
     <PackageReference Include="Microsoft.Extensions.Hosting.WindowsServices" Version="10.0.14" />
     <PackageReference Include="System.ServiceProcess.ServiceController" Version="10.0.14" />
   </ItemGroup>
