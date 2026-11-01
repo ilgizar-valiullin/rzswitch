@@ -75,7 +75,7 @@ static class Svc
     }
 
     public static string ServiceExe() =>
-        Path.Combine(AppContext.BaseDirectory, "rzswitch.exe");
+        Path.Combine(Path.GetDirectoryName(Environment.ProcessPath ?? AppContext.BaseDirectory)!, "rzswitch.exe");
 }
 
 static class SysInstall
@@ -133,6 +133,8 @@ static class SysInstall
         var (o1, c1) = Svc.Run("sc", $"create {Svc.Own} binPath= \"{SvcExeDst}\" start= auto");
         var (o2, c2) = Svc.Run("sc", $"description {Svc.Own} \"Razer GameManager replacement: foreground detector + SignalR hub\"");
         RegisterUninstall();
+        RegisterTrackerAutostart(SvcExeDst);
+        StartTracker(SvcExeDst);
         var gms = Svc.Query(Svc.Gms);
         if (gms.Exists && (gms.Status == "Running" || gms.StartType != "disabled"))
             return $"{was} | copied to {InstallDir} | create[{c1}] {First(o1)} | desc[{c2}] {First(o2)} | start blocked: disable GameManager first";
@@ -144,6 +146,7 @@ static class SysInstall
     {
         var (o1, c1) = Svc.Run("sc", $"stop {Svc.Own}");
         var (o2, c2) = Svc.Run("sc", $"delete {Svc.Own}");
+        UnregisterTrackerAutostart();
         UnregisterUninstall();
         var files = TryDeleteFiles();
         return $"stop[{c1}] {First(o1)} | delete[{c2}] {First(o2)} | {files}";
@@ -286,6 +289,42 @@ static class SysInstall
             }
             catch { }
         }
+    }
+
+    internal static void RegisterTrackerAutostart(string exePath)
+    {
+        try
+        {
+            using var k = Registry.CurrentUser.OpenSubKey(
+                @"Software\Microsoft\Windows\CurrentVersion\Run", writable: true);
+            k?.SetValue("rzswitch-tracker", $"\"{exePath}\" --foreground-tracker", RegistryValueKind.String);
+        }
+        catch { }
+    }
+
+    internal static void UnregisterTrackerAutostart()
+    {
+        try
+        {
+            using var k = Registry.CurrentUser.OpenSubKey(
+                @"Software\Microsoft\Windows\CurrentVersion\Run", writable: true);
+            k?.DeleteValue("rzswitch-tracker", throwOnMissingValue: false);
+        }
+        catch { }
+    }
+
+    internal static void StartTracker(string exePath)
+    {
+        try
+        {
+            Process.Start(new ProcessStartInfo(exePath, "--foreground-tracker")
+            {
+                UseShellExecute = false,
+                CreateNoWindow = true,
+                WindowStyle = ProcessWindowStyle.Hidden,
+            });
+        }
+        catch { }
     }
 
     private static string TryDeleteFiles()
@@ -539,17 +578,19 @@ sealed class SetupForm : Form
         });
         _bOwnSetup.Click += (_, _) =>
         {
+            var exe = Svc.ServiceExe();
+            if (!File.Exists(exe)) { Log($"missing {exe} - keep setup next to rzswitch.exe"); RefreshStatus(); return; }
             if (!Svc.Query(Svc.Own).Exists)
             {
                 Do("service installed", () =>
                 {
-                    var exe = Svc.ServiceExe();
-                    if (!File.Exists(exe)) return $"missing {exe} - keep setup next to rzswitch.exe";
                     var (o1, c1) = Svc.Run("sc", $"create {Svc.Own} binPath= \"{exe}\" start= auto");
                     var (o2, c2) = Svc.Run("sc", $"description {Svc.Own} \"Razer GameManager replacement: foreground detector + SignalR hub\"");
                     return $"create[{c1}] {FirstLine(o1)} | desc[{c2}] {FirstLine(o2)}";
                 });
             }
+            SysInstall.RegisterTrackerAutostart(exe);
+            SysInstall.StartTracker(exe);
             var gms = Svc.Query(Svc.Gms);
             if (gms.Exists && (gms.Status == "Running" || gms.StartType != "disabled"))
             {
@@ -567,6 +608,7 @@ sealed class SetupForm : Form
         {
             var (o1, c1) = Svc.Run("sc", $"stop {Svc.Own}");
             var (o2, c2) = Svc.Run("sc", $"delete {Svc.Own}");
+            SysInstall.UnregisterTrackerAutostart();
             return $"stop[{c1}] {FirstLine(o1)} | delete[{c2}] {FirstLine(o2)}";
         });
         _bSysInstall.Click += (_, _) => Do("installed to system", SysInstall.Install);

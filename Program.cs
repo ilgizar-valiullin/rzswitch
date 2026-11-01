@@ -7,7 +7,12 @@ using System.Runtime.InteropServices;
 using System.Runtime.Versioning;
 using System.Security.Principal;
 using System.ServiceProcess;
+using System.Text;
+using System.Text.Json;
 using System.Text.Json.Serialization;
+using Microsoft.Win32;
+using Microsoft.AspNetCore.Authorization;
+using System.Linq;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Http;
@@ -38,6 +43,8 @@ public sealed class GameSignature
     [JsonPropertyName("launch_exe")] public string LaunchExe { get; set; } = "";
     [JsonPropertyName("process_name")] public string ProcessName { get; set; } = "";
     [JsonPropertyName("default_exe")] public string DefaultExe { get; set; } = "";
+    [JsonPropertyName("default_exe32_bit")] public string DefaultExe32 { get; set; } = "";
+    [JsonPropertyName("default_exe64_bit")] public string DefaultExe64 { get; set; } = "";
     [JsonPropertyName("detecting_method")]
     [JsonConverter(typeof(JsonStringEnumConverter<DetectMethod>))]
     public DetectMethod DetectingMethod { get; set; } = DetectMethod.MANUAL;
@@ -54,30 +61,178 @@ public sealed class GameSignatureWithPid
     [JsonPropertyName("signature")] public GameSignature Signature { get; set; } = new();
 }
 
-// ================= hub =================
-public interface IRzPush
+public sealed class GameSignatureWithDuration
 {
-    Task OnGameStartedWithPidEvent(GameSignatureWithPid e);
-    Task OnGameStoppedWithPidEvent(GameSignatureWithPid e);
-    Task OnGameStartedEvent(GameSignature e);
-    Task OnGameStoppedEvent(GameSignature e);
-    Task OnProcessStartedEvent(GameSignatureWithPid e);
-    Task OnProcessStoppedEvent(GameSignatureWithPid e);
+    [JsonPropertyName("duration")] public TimeSpan Duration { get; set; }
+    [JsonPropertyName("signature")] public GameSignature Signature { get; set; } = new();
 }
 
+// Client-callback payloads. Razer wraps every signature in a named property
+// (GameSignatureEventArgs.GameSignature etc.), so a bare GameSignature arrives
+// on the client as e.gameSignature === undefined and the handler throws.
+public sealed class GameSignatureEventArgs
+{
+    [JsonPropertyName("gameSignature")] public GameSignature GameSignature { get; set; } = new();
+}
+
+public sealed class GameSignatureWithPidEventArgs
+{
+    [JsonPropertyName("gameSignatureWithPid")] public GameSignatureWithPid GameSignatureWithPid { get; set; } = new();
+}
+
+public sealed class GameSignatureWithDurationEventArgs
+{
+    [JsonPropertyName("gameSignatureWithDuration")] public GameSignatureWithDuration GameSignatureWithDuration { get; set; } = new();
+}
+
+public sealed class PartialGameSignatureList
+{
+    [JsonPropertyName("gameListInfo")] public object? GameListInfo { get; set; }
+    [JsonPropertyName("gameSignatureList")] public List<GameSignature> SignatureList { get; set; } = new();
+    [JsonPropertyName("userId")] public string UserId { get; set; } = "";
+    [JsonPropertyName("offset")] public int Offset { get; set; }
+    [JsonPropertyName("totalSize")] public int TotalSize { get; set; }
+}
+
+public sealed class GameSettingsList
+{
+    [JsonPropertyName("settingsList")] public List<object> SettingsList { get; set; } = new();
+    [JsonPropertyName("userId")] public string UserId { get; set; } = "";
+}
+
+[JsonConverter(typeof(JsonStringEnumConverter<GameScannerErrorCode>))]
+public enum GameScannerErrorCode
+{
+    GS_SUCCESS,
+    GS_FAILED,
+    GS_SCAN_IN_PROGRESS,
+    GS_NOT_CONFIGURED,
+}
+
+public sealed class ForegroundUpdate
+{
+    [JsonPropertyName("pid")] public uint Pid { get; set; }
+    [JsonPropertyName("exe")] public string Exe { get; set; } = "";
+}
+
+// ================= hub =================
+// Mirrors Razer.GameScannerCommon.IGameManagerServiceHubClient.
+public interface IRzPush
+{
+    Task OnGameStartedEvent(GameSignatureEventArgs args);
+    Task OnGameStartedWithPidEvent(GameSignatureWithPidEventArgs args);
+    Task OnGameStoppedEvent(GameSignatureEventArgs args);
+    Task OnGameStoppedWithPidEvent(GameSignatureWithPidEventArgs args);
+    Task OnGameStoppedWithDurationEvent(GameSignatureWithDurationEventArgs args);
+}
+
+[AllowAnonymous]
 public sealed class RzHub : Hub<IRzPush>
 {
+    private const int MaxGameListSize = 16;
     private readonly ILogger<RzHub> _log;
-    public RzHub(ILogger<RzHub> log) { _log = log; }
+    private readonly RzState _state;
+    public RzHub(ILogger<RzHub> log, RzState state) { _log = log; _state = state; }
     public override Task OnConnectedAsync()
     {
         _log.LogInformation("hub client connected: {id}", Context.ConnectionId);
+        if (_state.CurrentExe != null && _state.Games.TryGetValue(_state.CurrentExe, out var sig))
+        {
+            var args = new GameSignatureEventArgs { GameSignature = sig };
+            _ = Clients.Client(Context.ConnectionId).OnGameStartedEvent(args);
+            _log.LogInformation("OnConnectedAsync: sent OnGameStartedEvent exe={exe} guid={guid} payload={payload}",
+                _state.CurrentExe, sig.EntryGuid, JsonSerializer.Serialize(args));
+        }
         return base.OnConnectedAsync();
+    }
+    public override Task OnDisconnectedAsync(Exception? exception)
+    {
+        _log.LogInformation("hub client disconnected: {id} err={err}", Context.ConnectionId, exception?.Message);
+        return base.OnDisconnectedAsync(exception);
     }
     public string Ping(string? msg)
     {
         _log.LogInformation("Ping({m})", msg);
         return "pong";
+    }
+
+    // ================= Synapse client RPCs =================
+    public GameScannerErrorCode ConfigSetUniqueUserIdWithClientVersion(string appName, string userId, int clientVersion)
+    {
+        _state.UserId = userId ?? "";
+        _log.LogInformation("ConfigSetUniqueUserIdWithClientVersion app={app} user={user} clientVer={cv}", appName, userId, clientVersion);
+        return GameScannerErrorCode.GS_SUCCESS;
+    }
+
+    public string GetServiceVersion()
+    {
+        var v = _state.ServiceVersion;
+        _log.LogInformation("GetServiceVersion -> {v}", v);
+        return v;
+    }
+
+    public bool IsScanning() => false;
+
+    public GameScannerErrorCode StartScan()
+    {
+        _log.LogInformation("StartScan");
+        return GameScannerErrorCode.GS_SUCCESS;
+    }
+
+    public GameScannerErrorCode StopScan() => GameScannerErrorCode.GS_SUCCESS;
+
+    public async IAsyncEnumerable<PartialGameSignatureList> GetLocalGameListPartial(int offset)
+    {
+        _log.LogInformation("GetLocalGameListPartial offset={offset}", offset);
+        await foreach (var page in Pages(_state.Games.Values.ToList(), offset))
+            yield return page;
+    }
+
+    public async IAsyncEnumerable<PartialGameSignatureList> GetUserGameListPartial(int offset)
+    {
+        _log.LogInformation("GetUserGameListPartial offset={offset}", offset);
+        await foreach (var page in Pages(_state.Games.Values.ToList(), offset))
+            yield return page;
+    }
+
+    public GameSettingsList GetGameSettingsList()
+    {
+        _log.LogInformation("GetGameSettingsList user={u}", _state.UserId);
+        return new GameSettingsList { UserId = _state.UserId };
+    }
+
+    public Task<List<GameSignatureWithPid>> GetCurrentRunningGamesListAsync()
+    {
+        _log.LogInformation("GetCurrentRunningGamesListAsync");
+        var list = new List<GameSignatureWithPid>();
+        if (_state.CurrentExe != null && _state.Games.TryGetValue(_state.CurrentExe, out var sig))
+        {
+            list.Add(new GameSignatureWithPid { Pid = _state.CurrentPid, Signature = sig });
+        }
+        return Task.FromResult(list);
+    }
+
+    // Razer streams the game list in pages of 16 and always yields at least one page.
+    private async IAsyncEnumerable<PartialGameSignatureList> Pages(List<GameSignature> all, int offset)
+    {
+        if (offset < 0) offset = 0;
+        if (offset > all.Count) offset = all.Count;
+        var total = all.Count;
+        do
+        {
+            var take = Math.Min(MaxGameListSize, total - offset);
+            var page = new PartialGameSignatureList
+            {
+                UserId = _state.UserId,
+                Offset = offset,
+                TotalSize = total,
+                SignatureList = all.GetRange(offset, take),
+            };
+            offset += take;
+            yield return page;
+            await Task.Yield();
+        }
+        while (total > offset);
     }
 }
 
@@ -86,6 +241,9 @@ public sealed class RzState
     public Dictionary<string, GameSignature> Games = new(StringComparer.OrdinalIgnoreCase);
     public string? CurrentExe;
     public uint CurrentPid;
+    public DateTime CurrentStartedAt;
+    public string UserId = "";
+    public string ServiceVersion = "3.15.0.1200";
     public string LastEvent = "—";
     public int BoundPort;
 }
@@ -139,11 +297,15 @@ internal static class GameList
                     foreach (System.Xml.XmlNode n in doc.GetElementsByTagName("GameSignature"))
                     {
                         string Sel(string x) => n.SelectSingleNode(x)?.InnerText ?? "";
+                        static string BaseName(string v)
+                        {
+                            var s = Math.Max(v.LastIndexOf('\\'), v.LastIndexOf('/'));
+                            return s >= 0 ? v[(s + 1)..] : v;
+                        }
                         var exe = Sel("DefaultExe");
                         if (string.IsNullOrWhiteSpace(exe)) exe = Sel("LaunchExe");
                         if (string.IsNullOrWhiteSpace(exe)) continue;
-                        var slash = Math.Max(exe.LastIndexOf('\\'), exe.LastIndexOf('/'));
-                        if (slash >= 0) exe = exe[(slash + 1)..];
+                        exe = BaseName(exe.Trim());
                         if (Guid.TryParse(Sel("EntryGUID"), out var g) && g != Guid.Empty)
                         {
                             map[exe] = new GameSignature
@@ -154,6 +316,8 @@ internal static class GameList
                                 LaunchExe = Sel("LaunchExe"),
                                 ProcessName = Sel("ProcessName"),
                                 DefaultExe = exe,
+                                DefaultExe32 = BaseName(Sel("DefaultExe32").Trim()),
+                                DefaultExe64 = BaseName(Sel("DefaultExe64").Trim()),
                             };
                         }
                     }
@@ -193,8 +357,7 @@ internal static class Svc
             if (!exists) return new Info(false, "—", "—");
             using var sc = new ServiceController(name);
             string status;
-            try { status = sc.Status.ToString(); }
-            catch { status = "unknown"; }
+            try { status = sc.Status.ToString(); } catch { status = "unknown"; }
             return new Info(true, status, StartMode(name));
         }
         catch { return new Info(false, "—", "—"); }
@@ -418,21 +581,41 @@ public static class Program
     [SupportedOSPlatform("windows")]
     public static async Task Main(string[] args)
     {
+        // foreground tracker mode: runs in user session, reports active window to the service
+        if (args.Any(a => a.Equals("--foreground-tracker", StringComparison.OrdinalIgnoreCase)))
+        {
+            await TrackerLoop(LogPath());
+            return;
+        }
+
         var builder = WebApplication.CreateBuilder(args);
         builder.Logging.ClearProviders();
         builder.Logging.AddConsole();
         builder.Logging.AddProvider(new FileLogger(LogPath()));
-        builder.Services.AddCors(o => o.AddPolicy("CorsPolicy", p => p.AllowAnyOrigin().AllowAnyHeader().AllowAnyMethod()));
-        builder.Services.AddSignalR(o => o.EnableDetailedErrors = true);
+        builder.Services.AddCors(o => o.AddPolicy("CorsPolicy", p => p
+            .SetIsOriginAllowed(_ => true)
+            .AllowAnyHeader()
+            .AllowAnyMethod()
+            .AllowCredentials()));
+        builder.Services.AddSignalR(o =>
+        {
+            o.EnableDetailedErrors = true;
+            o.MaximumReceiveMessageSize = 1024 * 1024;
+        }).AddJsonProtocol(o =>
+        {
+            // Razer's own hub uses JsonStringEnumConverter, so enums (e.g.
+            // GameScannerErrorCode) must travel as strings like "GS_SUCCESS".
+            o.PayloadSerializerOptions.Converters.Add(new JsonStringEnumConverter());
+        });
         builder.Services.AddSingleton<RzState>();
         builder.Host.UseWindowsService();
 
         var app = builder.Build();
         app.UseCors("CorsPolicy");
-        app.MapHub<RzHub>("/GameManagerServiceHub");
 
         var log = app.Services.GetRequiredService<ILoggerFactory>().CreateLogger("rzswitch");
         var state = app.Services.GetRequiredService<RzState>();
+        var hub = app.Services.GetRequiredService<IHubContext<RzHub, IRzPush>>();
         state.Games = GameList.Load(log);
 
         foreach (var dir in Directory.GetDirectories(@"C:\ProgramData\Razer\GameManager3\Data", "rzr_*"))
@@ -448,6 +631,8 @@ public static class Program
             };
             w.EnableRaisingEvents = true;
         }
+
+        MapUi(app, state, log, hub);
 
         // port: explicit arg wins, then registry (GameManager's ServerPort), then dynamic
         int port = 0;
@@ -471,6 +656,17 @@ public static class Program
             port = 0;
         }
 
+        foreach (var key in new[] { @"Software\Razer\Services\GMS3", @"Software\WOW6432Node\Razer\Services\GMS3" })
+        {
+            try
+            {
+                using var k = Microsoft.Win32.Registry.LocalMachine.OpenSubKey(key);
+                var v = k?.GetValue("version")?.ToString();
+                if (!string.IsNullOrWhiteSpace(v)) { state.ServiceVersion = v!; break; }
+            }
+            catch { }
+        }
+
         // dynamic loopback port like stock GMS, then publish to registry
         app.Urls.Clear();
         app.Urls.Add(port > 0 ? $"http://127.0.0.1:{port}" : "http://127.0.0.1:0");
@@ -483,9 +679,9 @@ public static class Program
         WriteServerPort(port, log);
         log.LogInformation("hub on 127.0.0.1:{p}, games: {n}", port, state.Games.Count);
 
-        MapUi(app, state, log);
         _ = GuardLoop(app, state, log);
-        _ = WatchLoop(app, state, log);
+        // WatchLoop disabled: service runs in session 0 and cannot see user foreground.
+        // Foreground tracking is done by rzswitch.exe --foreground-tracker (user-session autostart).
         await app.WaitForShutdownAsync();
     }
 
@@ -509,13 +705,15 @@ public static class Program
             {
                 using var k = Microsoft.Win32.Registry.LocalMachine.CreateSubKey(baseKey);
                 k?.SetValue("ServerPort", port.ToString(), Microsoft.Win32.RegistryValueKind.String);
-                log.LogInformation("ServerPort={p} -> HKLM\\{k}", port, baseKey);
+                // read back to verify
+                var readBack = k?.GetValue("ServerPort")?.ToString();
+                log.LogInformation("ServerPort={p} -> HKLM\\{k} (readback={rb})", port, baseKey, readBack);
             }
-            catch (Exception ex) { log.LogWarning("registry write failed (need admin): {m}", ex.Message); }
+            catch (Exception ex) { log.LogWarning("registry write failed for {k} (need admin): {m}", baseKey, ex.Message); }
         }
     }
 
-    private static void MapUi(WebApplication app, RzState state, ILogger log)
+    private static void MapUi(WebApplication app, RzState state, ILogger log, IHubContext<RzHub, IRzPush> hub)
     {
         string StatusHtml(string msg)
         {
@@ -535,6 +733,16 @@ public static class Program
             }
             catch (Exception ex) { return Results.Text("log: " + ex.Message); }
         });
+
+        app.MapGet("/api/port", () => Results.Text(state.BoundPort.ToString(), "text/plain; charset=utf-8"));
+
+        app.MapPost("/api/foreground", async (ForegroundUpdate update) =>
+        {
+            await HandleForegroundChange(update.Pid, update.Exe, state, hub, log);
+            return Results.Ok();
+        });
+
+        app.MapHub<RzHub>("/GameManagerServiceHub");
 
         string Do(string label, Func<string> act)
         {
@@ -563,6 +771,8 @@ public static class Program
                 var exe = Svc.ExePath();
                 var (o1, c1) = Svc.Run("sc", $"create {Svc.Own} binPath= \"{exe}\" start= auto");
                 var (o2, c2) = Svc.Run("sc", $"description {Svc.Own} \"Razer GameManager replacement: foreground detector + SignalR hub for Synapse profiles\"");
+                RegisterTrackerAutostart(log);
+                StartTracker(log);
                 return $"create[{c1}]\n{o1}\ndesc[{c2}]\n{o2}";
             }), "text/html; charset=utf-8"));
         app.MapPost("/api/own-remove", () =>
@@ -587,6 +797,7 @@ public static class Program
             Results.Content(Do("rzswitch остановлен", () =>
             {
                 var (o, c) = Svc.Run("sc", $"stop {Svc.Own}");
+                UnregisterTrackerAutostart(log);
                 return $"stop[{c}]\n{o}";
             }), "text/html; charset=utf-8"));
     }
@@ -613,47 +824,206 @@ public static class Program
                 // registry is touched only when GMS actually started itself (see branch above)
             }
             catch (Exception ex) { log.LogWarning("guard: {m}", ex.Message); }
-            try { await Task.Delay(TimeSpan.FromSeconds(30), stop); }
-            catch { break; }
+            try { await Task.Delay(TimeSpan.FromSeconds(30), stop); } catch { break; }
         }
     }
 
-    private static async Task WatchLoop(WebApplication app, RzState state, ILogger log)
+    // shared state mutation lock (/api/foreground, GuardLoop)
+    private static readonly object StateLock = new();
+
+    private static async Task HandleForegroundChange(uint pid, string exe, RzState state,
+        IHubContext<RzHub, IRzPush> hub, ILogger log)
     {
-        var hub = app.Services.GetRequiredService<IHubContext<RzHub, IRzPush>>();
-        var stop = app.Lifetime.ApplicationStopping;
-        while (!stop.IsCancellationRequested)
+        if (string.IsNullOrEmpty(exe)) return;
+        lock (StateLock)
         {
+            if (!string.Equals(exe, state.CurrentExe, StringComparison.OrdinalIgnoreCase))
+            {
+                if (state.CurrentExe != null && state.Games.TryGetValue(state.CurrentExe, out var prev))
+                {
+                    var prevCopy = new GameSignature
+                    {
+                        EntryGuid = prev.EntryGuid,
+                        DisplayName = prev.DisplayName,
+                        GameTitle = prev.GameTitle,
+                        LaunchExe = prev.LaunchExe,
+                        ProcessName = state.CurrentExe,
+                        DefaultExe = prev.DefaultExe,
+                        DefaultExe32 = prev.DefaultExe32,
+                        DefaultExe64 = prev.DefaultExe64,
+                    };
+                    var duration = state.CurrentStartedAt == default
+                        ? TimeSpan.Zero
+                        : DateTime.Now - state.CurrentStartedAt;
+
+                    var stopped = new GameSignatureEventArgs { GameSignature = prevCopy };
+                    var stoppedPid = new GameSignatureWithPidEventArgs
+                    {
+                        GameSignatureWithPid = new GameSignatureWithPid { Pid = state.CurrentPid, Signature = prevCopy },
+                    };
+                    var stoppedDuration = new GameSignatureWithDurationEventArgs
+                    {
+                        GameSignatureWithDuration = new GameSignatureWithDuration { Duration = duration, Signature = prevCopy },
+                    };
+
+                    _ = hub.Clients.All.OnGameStoppedEvent(stopped);
+                    _ = hub.Clients.All.OnGameStoppedWithPidEvent(stoppedPid);
+                    _ = hub.Clients.All.OnGameStoppedWithDurationEvent(stoppedDuration);
+                    state.LastEvent = $"STOP {state.CurrentExe} pid={state.CurrentPid}";
+                    log.LogInformation("{e} -> OnGameStoppedEvent payload={payload}", state.LastEvent, JsonSerializer.Serialize(stopped));
+                }
+                state.CurrentExe = exe;
+                state.CurrentPid = pid;
+                state.CurrentStartedAt = DateTime.Now;
+                if (state.Games.TryGetValue(exe, out var sig))
+                {
+                    var started = new GameSignatureEventArgs { GameSignature = sig };
+                    var startedPid = new GameSignatureWithPidEventArgs
+                    {
+                        GameSignatureWithPid = new GameSignatureWithPid { Pid = pid, Signature = sig },
+                    };
+                    _ = hub.Clients.All.OnGameStartedEvent(started);
+                    _ = hub.Clients.All.OnGameStartedWithPidEvent(startedPid);
+                    state.LastEvent = $"START {exe} pid={pid} guid={sig.EntryGuid}";
+                    log.LogInformation("{e} -> OnGameStartedEvent payload={payload}", state.LastEvent, JsonSerializer.Serialize(started));
+                }
+                else
+                {
+                    state.LastEvent = $"{DateTime.Now:HH:mm:ss} foreground: {exe} (не игра)";
+                    log.LogInformation("{e}", state.LastEvent);
+                }
+            }
+        }
+    }
+
+    // user-session foreground tracker: runs as rzswitch.exe --foreground-tracker
+    // (autostart via HKCU Run). Calls GetForegroundWindow in the user session and
+    // POSTs changes to the service's /api/foreground endpoint.
+    private static async Task TrackerLoop(string logPath)
+    {
+        using var cts = new CancellationTokenSource();
+        Console.CancelKeyPress += (_, e) => { e.Cancel = true; cts.Cancel(); };
+
+        var log = new FileLogger(logPath).CreateLogger("tracker");
+        var http = new HttpClient { Timeout = TimeSpan.FromSeconds(2) };
+        int port = 0;
+        string? lastExe = null;
+
+        while (!cts.Token.IsCancellationRequested)
+        {
+            if (port == 0)
+            {
+                port = ReadServerPortFromRegistry();
+                if (port == 0 || port == 14914)
+                {
+                    // try fallback ports
+                    foreach (var p2 in new[] { 1654, 14915, 5000 })
+                    {
+                        try
+                        {
+                            using var hc = new HttpClient { Timeout = TimeSpan.FromSeconds(1) };
+                            var r = await hc.GetAsync($"http://127.0.0.1:{p2}/api/log");
+                            if (r.IsSuccessStatusCode) { port = p2; break; }
+                        }
+                        catch { }
+                    }
+                }
+                if (port == 0)
+                {
+                    log.LogInformation("tracker: waiting for service port...");
+                    try { await Task.Delay(2000, cts.Token); } catch { break; }
+                    continue;
+                }
+                log.LogInformation("tracker: service port={p}", port);
+            }
+
             try
             {
                 var (pid, exe) = Foreground.Get();
-                if (!string.IsNullOrEmpty(exe) && !string.Equals(exe, state.CurrentExe, StringComparison.OrdinalIgnoreCase))
+                if (!string.Equals(exe, lastExe, StringComparison.OrdinalIgnoreCase))
                 {
-                    if (state.CurrentExe != null && state.Games.TryGetValue(state.CurrentExe, out var prev))
+                    lastExe = exe;
+                    if (!string.IsNullOrEmpty(exe))
                     {
-                        await hub.Clients.All.OnGameStoppedWithPidEvent(
-                            new GameSignatureWithPid { Pid = state.CurrentPid, Signature = prev });
-                        state.LastEvent = $"STOP {state.CurrentExe} pid={state.CurrentPid}";
-                        log.LogInformation("{e}", state.LastEvent);
-                    }
-                    state.CurrentExe = exe;
-                    state.CurrentPid = pid;
-                    if (state.Games.TryGetValue(exe, out var sig))
-                    {
-                        await hub.Clients.All.OnGameStartedWithPidEvent(
-                            new GameSignatureWithPid { Pid = pid, Signature = sig });
-                        state.LastEvent = $"START {exe} pid={pid} guid={sig.EntryGuid}";
-                        log.LogInformation("{e}", state.LastEvent);
-                    }
-                    else
-                    {
-                        state.LastEvent = $"{DateTime.Now:HH:mm:ss} foreground: {exe} (не игра)";
+                        try
+                        {
+                            var payload = new { pid, exe };
+                            var json = JsonSerializer.Serialize(payload);
+                            var content = new StringContent(json, Encoding.UTF8, "application/json");
+                            var resp = await http.PostAsync(
+                                $"http://127.0.0.1:{port}/api/foreground", content, cts.Token);
+                            log.LogInformation("tracker: exe={exe} pid={pid} -> HTTP {status}",
+                                exe, pid, (int)resp.StatusCode);
+                        }
+                        catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException)
+                        {
+                            port = 0; // service not ready / port changed, re-read
+                            log.LogWarning("tracker: cannot reach service: {m}", ex.Message);
+                        }
                     }
                 }
             }
-            catch (Exception ex) { log.LogWarning("watcher: {m}", ex.Message); }
-            try { await Task.Delay(500, stop); }
-            catch { break; }
+            catch (Exception ex) { log.LogWarning("tracker: {m}", ex.Message); }
+
+            try { await Task.Delay(500, cts.Token); } catch { break; }
         }
+    }
+
+    private static int ReadServerPortFromRegistry()
+    {
+        foreach (var key in new[] { @"Software\Razer\Services\GMS3", @"Software\WOW6432Node\Razer\Services\GMS3" })
+        {
+            try
+            {
+                using var k = Registry.LocalMachine.OpenSubKey(key);
+                var v = k?.GetValue("ServerPort")?.ToString();
+                if (int.TryParse(v, out var p) && p > 0) return p;
+            }
+            catch { }
+        }
+        return 0;
+    }
+
+    private const string TrackerRunValue = "rzswitch-tracker";
+
+    private static string TrackerExePath() => Path.Combine(AppContext.BaseDirectory, "rzswitch.exe");
+
+    private static void RegisterTrackerAutostart(ILogger log)
+    {
+        try
+        {
+            using var k = Registry.CurrentUser.OpenSubKey(
+                @"Software\Microsoft\Windows\CurrentVersion\Run", writable: true);
+            k?.SetValue(TrackerRunValue, $"\"{TrackerExePath()}\" --foreground-tracker", RegistryValueKind.String);
+            log.LogInformation("tracker autostart registered: {path}", TrackerExePath());
+        }
+        catch (Exception ex) { log.LogWarning("tracker autostart register failed: {m}", ex.Message); }
+    }
+
+    private static void UnregisterTrackerAutostart(ILogger log)
+    {
+        try
+        {
+            using var k = Registry.CurrentUser.OpenSubKey(
+                @"Software\Microsoft\Windows\CurrentVersion\Run", writable: true);
+            k?.DeleteValue(TrackerRunValue, throwOnMissingValue: false);
+            log.LogInformation("tracker autostart unregistered");
+        }
+        catch (Exception ex) { log.LogWarning("tracker autostart unregister failed: {m}", ex.Message); }
+    }
+
+    private static void StartTracker(ILogger log)
+    {
+        try
+        {
+            Process.Start(new ProcessStartInfo(TrackerExePath(), "--foreground-tracker")
+            {
+                UseShellExecute = false,
+                CreateNoWindow = true,
+                WindowStyle = ProcessWindowStyle.Hidden,
+            });
+            log.LogInformation("tracker started (hidden): {path}", TrackerExePath());
+        }
+        catch (Exception ex) { log.LogWarning("tracker start failed: {m}", ex.Message); }
     }
 }
