@@ -2,6 +2,12 @@
 
 All notable changes to this project are documented here. Versioning follows [Semantic Versioning](https://semver.org/).
 
+## [1.3.1] — 2026-11-09
+
+### Fixed
+
+- Tracker no longer shows a console window after reboot/logon: `HKCU\...\Run` launches `rztracker.exe` directly, so Windows allocates a visible console (`CreateNoWindow` only applies to `Process.Start` launches). The tracker now hides its own console at startup via `GetConsoleWindow` + `ShowWindow(SW_HIDE)`. Opt-out for debugging: `rztracker.exe --foreground-tracker --show-console`.
+
 ## [1.3.0] — 2026-11-01
 
 ### Fixed

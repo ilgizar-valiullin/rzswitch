@@ -527,12 +527,32 @@ public static class Program
 {
     private static string LogPath() => Path.Combine(AppContext.BaseDirectory, "rzswitch.log");
 
+    [DllImport("kernel32.dll")] private static extern IntPtr GetConsoleWindow();
+    [DllImport("user32.dll")] private static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
+    private const int SW_HIDE = 0;
+
+    // Autorun via HKCU\...\Run launches rztracker.exe directly, so Windows
+    // allocates a visible console (CreateNoWindow only applies to
+    // Process.Start launches). Tracker must hide its own console.
+    private static void HideOwnConsole()
+    {
+        try
+        {
+            var h = GetConsoleWindow();
+            if (h != IntPtr.Zero) ShowWindow(h, SW_HIDE);
+        }
+        catch { }
+    }
+
     [SupportedOSPlatform("windows")]
     public static async Task Main(string[] args)
     {
         // foreground tracker mode: runs in user session, reports active window to the service
         if (args.Any(a => a.Equals("--foreground-tracker", StringComparison.OrdinalIgnoreCase)))
         {
+            // Opt-out for debugging: rztracker.exe --foreground-tracker --show-console
+            if (!args.Any(a => a.Equals("--show-console", StringComparison.OrdinalIgnoreCase)))
+                HideOwnConsole();
             await TrackerLoop(LogPath());
             return;
         }
